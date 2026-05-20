@@ -317,7 +317,9 @@ def list_drawers(wing: str | None = None, room: str | None = None, limit: int = 
 # ---------------------------------------------------------------------------
 
 def diary_write(content: str, session_id: str = "") -> Path:
-    """Append a diary entry for today."""
+    """Append a diary entry for today. Re-indexes the day's full file into
+    the drawers collection so diary content surfaces in search/context.
+    """
     DIARY_DIR.mkdir(parents=True, exist_ok=True)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     filepath = DIARY_DIR / f"{today}.md"
@@ -331,7 +333,29 @@ def diary_write(content: str, session_id: str = "") -> Path:
         filepath.write_text(f"# Diary {today}{entry}", encoding="utf-8")
 
     _git_commit(f"diary: {today}")
+    _index_diary_day(today, filepath)
     return filepath
+
+
+def _index_diary_day(date_str: str, filepath: Path) -> None:
+    """Upsert a diary day's full content into the drawers collection so it's
+    searchable. Wing=wing_claude, room=diary. Stable ID per day (idempotent)."""
+    try:
+        from mycelium.chroma import drawers_collection
+        body = filepath.read_text(encoding="utf-8")
+        drawers_collection().upsert(
+            ids=[f"diary_{date_str}"],
+            documents=[body],
+            metadatas=[{
+                "drawer_id":   f"diary_{date_str}",
+                "wing":        "wing_claude",
+                "room":        "diary",
+                "filed_at":    date_str,
+                "source_file": str(filepath),
+            }],
+        )
+    except Exception:
+        pass  # don't let index failure break the write
 
 
 def diary_read(date: str | None = None, n_days: int = 3) -> str:
@@ -435,9 +459,14 @@ def reindex_drawers() -> tuple[int, int]:
     col = drawers_collection()
 
     # Drawer filename IS the drawer_id (no YAML parse needed for orphan check)
-    disk_ids: set[str] = (
+    drawer_disk_ids: set[str] = (
         {f.stem for f in DRAWERS_DIR.glob("*.md")} if DRAWERS_DIR.exists() else set()
     )
+    # Diary files are indexed as drawers with id=diary_YYYY-MM-DD
+    diary_disk_ids: set[str] = (
+        {f"diary_{f.stem}" for f in DIARY_DIR.glob("*.md")} if DIARY_DIR.exists() else set()
+    )
+    disk_ids = drawer_disk_ids | diary_disk_ids
 
     indexed_ids = set(col.get(include=[])["ids"])
     orphans = list(indexed_ids - disk_ids)
@@ -451,6 +480,17 @@ def reindex_drawers() -> tuple[int, int]:
     batch_docs: list[str] = []
     batch_metas: list[dict] = []
     upserted = 0
+
+    def _flush() -> None:
+        nonlocal upserted
+        if not batch_ids:
+            return
+        col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
+        upserted += len(batch_ids)
+        print(_progress("drawers", upserted, total, t0), flush=True)
+        batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
+
+    # Regular drawers
     for f in (DRAWERS_DIR.glob("*.md") if DRAWERS_DIR.exists() else []):
         d = get_drawer(f.stem)
         if not d:
@@ -465,13 +505,22 @@ def reindex_drawers() -> tuple[int, int]:
             "source_file": d["filepath"],
         })
         if len(batch_ids) >= REINDEX_BATCH_SIZE:
-            col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
-            upserted += len(batch_ids)
-            print(_progress("drawers", upserted, total, t0), flush=True)
-            batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
-    if batch_ids:
-        col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
-        upserted += len(batch_ids)
-        print(_progress("drawers", upserted, total, t0), flush=True)
+            _flush()
 
+    # Diary days as drawers (room=diary, wing=wing_claude)
+    for f in (DIARY_DIR.glob("*.md") if DIARY_DIR.exists() else []):
+        date_str = f.stem
+        batch_ids.append(f"diary_{date_str}")
+        batch_docs.append(f.read_text(encoding="utf-8"))
+        batch_metas.append({
+            "drawer_id":   f"diary_{date_str}",
+            "wing":        "wing_claude",
+            "room":        "diary",
+            "filed_at":    date_str,
+            "source_file": str(f),
+        })
+        if len(batch_ids) >= REINDEX_BATCH_SIZE:
+            _flush()
+
+    _flush()
     return upserted, len(orphans)

@@ -580,6 +580,70 @@ def diary_read(date: Optional[str] = None, n_days: int = 3) -> str:
 # Utility
 # ---------------------------------------------------------------------------
 
+AAAK_SPEC = """AAAK is a compressed memory dialect used for diary entries and dense
+summaries. Designed to be readable by both humans and LLMs without decoding.
+
+FORMAT:
+  ENTITIES   3-letter uppercase codes per person/system (ALC=Alice, JOR=Jordan).
+  EMOTIONS   *action markers* before/in text: *warm*=joy, *fierce*=determined,
+             *raw*=vulnerable, *bloom*=tenderness.
+  STRUCTURE  Pipe-separated fields: FAM: family | PROJ: projects | WARN: warnings.
+  DATES      ISO format (2026-05-20).
+  COUNTS     Nx = N mentions (e.g. 570x).
+  IMPORTANCE Star scale ★ to ★★★★★.
+  WINGS      Domain-scoped: wing_user, wing_agent, wing_code, wing_claude, ...
+  ROOMS      Hyphenated slugs naming an aspect: chromadb-setup, gpu-pricing.
+
+EXAMPLE
+  SESSION:2026-05-20|TOPIC:mycelium.rebuild.phase1|★★★★★
+  FIXED: contextforge.tools.refresh.endpoint.discovered → manual.DB.insert.avoided
+  KEY.DECISION: disk-first.vault.canonical, chromadb.derived.only
+
+When WRITING AAAK: use entity codes, mark emotions, compress structure.
+When READING AAAK: expand codes mentally, *markers* are emotional context.
+"""
+
+
+@mcp.tool()
+def get_aaak_spec() -> str:
+    """Return the AAAK dialect specification — the compressed notation used
+    in diary entries and dense session summaries. Call once at session start
+    if writing AAAK content (e.g. via diary_write).
+    """
+    return AAAK_SPEC
+
+
+@mcp.tool()
+def get_taxonomy() -> str:
+    """Return the full wing → room → count tree of indexed drawers.
+
+    Useful before filing (which wings/rooms exist?) or to get a one-shot
+    overview of what's in the vault. Reads from the drawers ChromaDB
+    collection so it reflects what search would find.
+
+    Returns:
+        JSON with structure {"taxonomy": {wing: {room: count, ...}, ...}}.
+    """
+    col   = drawers_collection()
+    count = col.count()
+    if count == 0:
+        return json.dumps({"taxonomy": {}, "total": 0})
+
+    all_meta = col.get(include=["metadatas"])["metadatas"]
+    taxonomy: dict[str, dict[str, int]] = {}
+    for m in all_meta:
+        m = m or {}
+        w = m.get("wing", "unknown")
+        r = m.get("room", "unknown")
+        taxonomy.setdefault(w, {})
+        taxonomy[w][r] = taxonomy[w].get(r, 0) + 1
+    # Sort wings and rooms for stable output
+    taxonomy_sorted = {
+        w: dict(sorted(rooms.items())) for w, rooms in sorted(taxonomy.items())
+    }
+    return json.dumps({"taxonomy": taxonomy_sorted, "total": count}, indent=2)
+
+
 @mcp.tool()
 def status() -> str:
     """Report vault and index counts.
