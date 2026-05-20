@@ -326,48 +326,38 @@ def diary_read(date: str | None = None, n_days: int = 3) -> str:
 REINDEX_BATCH_SIZE = 500
 
 
-def _batched_upsert(col, ids: list[str], documents: list[str], metadatas: list[dict],
-                    batch_size: int = REINDEX_BATCH_SIZE,
-                    progress_label: str = "") -> None:
-    """Upsert in batches. ChromaDB embeds each batch in one call which is
-    100x faster than one-at-a-time for large collections (e.g. 97k drawers).
-    """
-    n = len(ids)
-    for start in range(0, n, batch_size):
-        end = min(start + batch_size, n)
-        col.upsert(
-            ids=ids[start:end],
-            documents=documents[start:end],
-            metadatas=metadatas[start:end],
-        )
-        if progress_label and (end % (batch_size * 10) == 0 or end == n):
-            print(f"  {progress_label}: {end}/{n} indexed", flush=True)
-
-
 def reindex_notes() -> tuple[int, int]:
     """Sync mycelium_notes ChromaDB collection with vault/notes/.
 
-    Returns (upserted, deleted_orphans). Notes on disk are upserted into the
-    index; index entries with no matching disk file are deleted.
+    Streams files in batches — loads, upserts, frees memory. Returns
+    (upserted, deleted_orphans).
     """
     from mycelium.chroma import notes_collection
 
     col = notes_collection()
 
-    disk_notes = [load_note(f) for f in NOTES_DIR.glob("*.md")] if NOTES_DIR.exists() else []
-    disk_notes = [n for n in disk_notes if n]
-    disk_ids   = {n["note_id"] for n in disk_notes}
+    # Orphan check by filename → derived note_id (slug-based), no YAML parse
+    disk_ids: set[str] = (
+        {note_id(f.stem) for f in NOTES_DIR.glob("*.md")} if NOTES_DIR.exists() else set()
+    )
 
     indexed_ids = set(col.get(include=[])["ids"])
-    orphans     = list(indexed_ids - disk_ids)
+    orphans = list(indexed_ids - disk_ids)
     if orphans:
         col.delete(ids=orphans)
 
-    ids, docs, metas = [], [], []
-    for n in disk_notes:
-        ids.append(n["note_id"])
-        docs.append(f"{n['title']}\n\n{n['content']}")
-        metas.append({
+    # Stream-upsert in batches
+    batch_ids: list[str] = []
+    batch_docs: list[str] = []
+    batch_metas: list[dict] = []
+    upserted = 0
+    for f in (NOTES_DIR.glob("*.md") if NOTES_DIR.exists() else []):
+        n = load_note(f)
+        if not n:
+            continue
+        batch_ids.append(n["note_id"])
+        batch_docs.append(f"{n['title']}\n\n{n['content']}")
+        batch_metas.append({
             "title":           n["title"],
             "slug":            slugify(n["title"]),
             "tags":            json.dumps(n["tags"]),
@@ -375,38 +365,63 @@ def reindex_notes() -> tuple[int, int]:
             "created_at":      n["created_at"],
             "filepath":        n["filepath"],
         })
-    _batched_upsert(col, ids, docs, metas, progress_label="notes")
-    return len(disk_notes), len(orphans)
+        if len(batch_ids) >= REINDEX_BATCH_SIZE:
+            col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
+            upserted += len(batch_ids)
+            print(f"  notes: {upserted} indexed", flush=True)
+            batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
+    if batch_ids:
+        col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
+        upserted += len(batch_ids)
+        print(f"  notes: {upserted} indexed", flush=True)
+
+    return upserted, len(orphans)
 
 
 def reindex_drawers() -> tuple[int, int]:
     """Sync mycelium_drawers ChromaDB collection with vault/drawers/.
 
-    Returns (upserted, deleted_orphans).
+    Streams files in batches. Returns (upserted, deleted_orphans).
     """
     from mycelium.chroma import drawers_collection
 
     col = drawers_collection()
 
-    disk_drawers = [get_drawer(f.stem) for f in DRAWERS_DIR.glob("*.md")] if DRAWERS_DIR.exists() else []
-    disk_drawers = [d for d in disk_drawers if d]
-    disk_ids     = {d["drawer_id"] for d in disk_drawers}
+    # Drawer filename IS the drawer_id (no YAML parse needed for orphan check)
+    disk_ids: set[str] = (
+        {f.stem for f in DRAWERS_DIR.glob("*.md")} if DRAWERS_DIR.exists() else set()
+    )
 
     indexed_ids = set(col.get(include=[])["ids"])
-    orphans     = list(indexed_ids - disk_ids)
+    orphans = list(indexed_ids - disk_ids)
     if orphans:
         col.delete(ids=orphans)
 
-    ids, docs, metas = [], [], []
-    for d in disk_drawers:
-        ids.append(d["drawer_id"])
-        docs.append(d["content"])
-        metas.append({
+    batch_ids: list[str] = []
+    batch_docs: list[str] = []
+    batch_metas: list[dict] = []
+    upserted = 0
+    for f in (DRAWERS_DIR.glob("*.md") if DRAWERS_DIR.exists() else []):
+        d = get_drawer(f.stem)
+        if not d:
+            continue
+        batch_ids.append(d["drawer_id"])
+        batch_docs.append(d["content"])
+        batch_metas.append({
             "drawer_id":   d["drawer_id"],
             "wing":        d["wing"],
             "room":        d["room"],
             "filed_at":    d["filed_at"],
             "source_file": d["filepath"],
         })
-    _batched_upsert(col, ids, docs, metas, progress_label="drawers")
-    return len(disk_drawers), len(orphans)
+        if len(batch_ids) >= REINDEX_BATCH_SIZE:
+            col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
+            upserted += len(batch_ids)
+            print(f"  drawers: {upserted} indexed", flush=True)
+            batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
+    if batch_ids:
+        col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
+        upserted += len(batch_ids)
+        print(f"  drawers: {upserted} indexed", flush=True)
+
+    return upserted, len(orphans)
