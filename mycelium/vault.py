@@ -35,22 +35,54 @@ from mycelium.config import (
 # Git auto-commit
 # ---------------------------------------------------------------------------
 
+_GIT_LOG = Path.home() / ".mycelium" / "git.log"
+
+
+def _git_args() -> list[str]:
+    """Base git args with safety + identity overrides as -c flags so the
+    function works in any execution context (host or container, any UID).
+    """
+    vault = str(VAULT_DIR)
+    return [
+        "git",
+        "-c", f"safe.directory={vault}",
+        "-c", f"user.name={VAULT_GIT_AUTHOR_NAME}",
+        "-c", f"user.email={VAULT_GIT_AUTHOR_EMAIL}",
+        "-C", vault,
+    ]
+
+
 def _git_commit(message: str) -> None:
+    """Stage and commit current vault changes. Logs failures rather than
+    swallowing them silently.
+    """
     if not VAULT_GIT_AUTHOR_NAME:
         return
+    if not (VAULT_DIR / ".git").exists():
+        return  # vault is not a git repo (expected during first-write before init)
     try:
-        vault = str(VAULT_DIR)
-        subprocess.run(["git", "-C", vault, "add", "-A"], check=True, capture_output=True)
-        subprocess.run(
-            [
-                "git", "-C", vault, "commit", "-m", message,
+        subprocess.run(_git_args() + ["add", "-A"], check=True, capture_output=True)
+        result = subprocess.run(
+            _git_args() + [
+                "commit", "-m", message,
                 f"--author={VAULT_GIT_AUTHOR_NAME} <{VAULT_GIT_AUTHOR_EMAIL}>",
             ],
-            check=True,
             capture_output=True,
         )
-    except subprocess.CalledProcessError:
-        pass  # vault may not be a git repo yet
+        # Exit code 1 with "nothing to commit" is normal (no changes staged).
+        if result.returncode != 0 and b"nothing to commit" not in result.stdout + result.stderr:
+            _log_git_failure(message, result.stderr.decode("utf-8", "replace"))
+    except (OSError, subprocess.SubprocessError) as e:
+        _log_git_failure(message, str(e))
+
+
+def _log_git_failure(message: str, error: str) -> None:
+    try:
+        _GIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_GIT_LOG, "a") as f:
+            f.write(f"[{datetime.now(timezone.utc).isoformat()}] commit '{message}' failed: {error.strip()}\n")
+    except OSError:
+        pass
 
 
 def init_vault_git() -> None:
@@ -58,9 +90,7 @@ def init_vault_git() -> None:
     VAULT_DIR.mkdir(parents=True, exist_ok=True)
     git_dir = VAULT_DIR / ".git"
     if not git_dir.exists():
-        subprocess.run(["git", "-C", str(VAULT_DIR), "init"], check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(VAULT_DIR), "config", "user.name", VAULT_GIT_AUTHOR_NAME], check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(VAULT_DIR), "config", "user.email", VAULT_GIT_AUTHOR_EMAIL], check=True, capture_output=True)
+        subprocess.run(_git_args() + ["init"], check=True, capture_output=True)
 
 
 # ---------------------------------------------------------------------------
