@@ -143,6 +143,19 @@ def load_note(filepath: Path) -> dict[str, Any] | None:
         return None
 
 
+def delete_note(nid: str) -> bool:
+    """Delete a note from disk by note_id. Returns True if found and deleted."""
+    if not NOTES_DIR.exists():
+        return False
+    for f in NOTES_DIR.glob("*.md"):
+        note = load_note(f)
+        if note and note["note_id"] == nid:
+            f.unlink()
+            _git_commit(f"delete note: {note['title']}")
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Drawers (verbatim captures)
 # ---------------------------------------------------------------------------
@@ -310,16 +323,26 @@ def diary_read(date: str | None = None, n_days: int = 3) -> str:
 # Index rebuild (ChromaDB from disk)
 # ---------------------------------------------------------------------------
 
-def reindex_notes() -> int:
-    """Rebuild mycelium_notes ChromaDB collection from vault/notes/."""
+def reindex_notes() -> tuple[int, int]:
+    """Sync mycelium_notes ChromaDB collection with vault/notes/.
+
+    Returns (upserted, deleted_orphans). Notes on disk are upserted into the
+    index; index entries with no matching disk file are deleted.
+    """
     from mycelium.chroma import notes_collection
 
     col = notes_collection()
-    count = 0
-    for f in NOTES_DIR.glob("*.md"):
-        note = load_note(f)
-        if not note:
-            continue
+
+    disk_notes = [load_note(f) for f in NOTES_DIR.glob("*.md")] if NOTES_DIR.exists() else []
+    disk_notes = [n for n in disk_notes if n]
+    disk_ids   = {n["note_id"] for n in disk_notes}
+
+    indexed_ids = set(col.get(include=[])["ids"])
+    orphans     = list(indexed_ids - disk_ids)
+    if orphans:
+        col.delete(ids=orphans)
+
+    for note in disk_notes:
         col.upsert(
             ids=[note["note_id"]],
             documents=[f"{note['title']}\n\n{note['content']}"],
@@ -332,20 +355,28 @@ def reindex_notes() -> int:
                 "filepath":        note["filepath"],
             }],
         )
-        count += 1
-    return count
+    return len(disk_notes), len(orphans)
 
 
-def reindex_drawers() -> int:
-    """Rebuild mycelium_drawers ChromaDB collection from vault/drawers/."""
+def reindex_drawers() -> tuple[int, int]:
+    """Sync mycelium_drawers ChromaDB collection with vault/drawers/.
+
+    Returns (upserted, deleted_orphans).
+    """
     from mycelium.chroma import drawers_collection
 
     col = drawers_collection()
-    count = 0
-    for f in DRAWERS_DIR.glob("*.md"):
-        d = get_drawer(f.stem)
-        if not d:
-            continue
+
+    disk_drawers = [get_drawer(f.stem) for f in DRAWERS_DIR.glob("*.md")] if DRAWERS_DIR.exists() else []
+    disk_drawers = [d for d in disk_drawers if d]
+    disk_ids     = {d["drawer_id"] for d in disk_drawers}
+
+    indexed_ids = set(col.get(include=[])["ids"])
+    orphans     = list(indexed_ids - disk_ids)
+    if orphans:
+        col.delete(ids=orphans)
+
+    for d in disk_drawers:
         col.upsert(
             ids=[d["drawer_id"]],
             documents=[d["content"]],
@@ -357,5 +388,4 @@ def reindex_drawers() -> int:
                 "source_file": d["filepath"],
             }],
         )
-        count += 1
-    return count
+    return len(disk_drawers), len(orphans)

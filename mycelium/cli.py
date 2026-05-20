@@ -62,11 +62,12 @@ def cmd_verify(args: list[str]) -> None:
 
 
 def cmd_reindex(args: list[str]) -> None:
-    """Rebuild ChromaDB index from vault/ markdown files."""
+    """Sync ChromaDB index with vault/ markdown files (upsert + prune orphans)."""
     from mycelium.vault import reindex_notes, reindex_drawers
-    n = reindex_notes()
-    d = reindex_drawers()
-    print(f"Reindexed: {n} notes, {d} drawers")
+    n_up, n_orph = reindex_notes()
+    d_up, d_orph = reindex_drawers()
+    print(f"Notes:   {n_up} upserted, {n_orph} orphans pruned")
+    print(f"Drawers: {d_up} upserted, {d_orph} orphans pruned")
 
 
 def main() -> None:

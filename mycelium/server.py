@@ -27,6 +27,7 @@ from mycelium.config import NOTES_DIR, VAULT_DIR
 from mycelium.search import search_drawers
 from mycelium.vault import (
     delete_drawer as _vault_delete_drawer,
+    delete_note as _vault_delete_note,
     diary_read as _vault_diary_read,
     diary_write as _vault_diary_write,
     get_drawer as _vault_get_drawer,
@@ -311,6 +312,25 @@ def write_note(
         }],
     )
     return f"Note written: {nid}\nFile: {filepath}"
+
+
+@mcp.tool()
+def delete_note(note_id: str) -> str:
+    """Delete a curated note from vault and index.
+
+    Removes both the markdown file and the ChromaDB entry. Prefer this over
+    manually deleting the file since it keeps the index in sync.
+
+    Args:
+        note_id: The note_xxx ID to delete (from query_notes/context results).
+    """
+    if not _vault_delete_note(note_id):
+        return json.dumps({"error": f"Note not found: {note_id}"})
+    try:
+        notes_collection().delete(ids=[note_id])
+    except Exception:
+        pass
+    return f"Deleted: {note_id}"
 
 
 @mcp.tool()
