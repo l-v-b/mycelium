@@ -97,20 +97,78 @@ def hybrid_rerank(
     return hits
 
 
+_CLOSET_DRAWER_REF_RE = re.compile(r"→([\w,]+)")
+
+# Mempalace-derived ranking knobs. Closet rank → boost on drawer's effective
+# distance. Lower-rank closet hits boost more (better topical match). Cap at
+# distance 1.5 — closets weaker than that aren't trustworthy signal.
+CLOSET_RANK_BOOSTS = [0.40, 0.25, 0.15, 0.08, 0.04]
+CLOSET_DISTANCE_CAP = 1.5
+
+
+def _closet_boosts(query: str, n_closets: int) -> dict[str, tuple[int, float, str]]:
+    """Query closets collection, return {drawer_id: (rank, distance, preview)}.
+
+    For each closet that ranks well, parse its referenced drawer_ids (encoded
+    in the closet document text as "→drawer_id_a,drawer_id_b") and stamp each
+    one with the closet's rank.
+
+    First match per drawer_id wins (best closet rank for that drawer).
+    """
+    from mycelium.chroma import closets_collection
+
+    col = closets_collection()
+    if col.count() == 0:
+        return {}
+
+    try:
+        results = col.query(
+            query_texts=[query],
+            n_results=min(n_closets, col.count()),
+            include=["documents", "distances"],
+        )
+    except Exception:
+        return {}
+
+    docs  = results["documents"][0] if results["documents"] else []
+    dists = results["distances"][0] if results["distances"] else []
+
+    boost_by_drawer: dict[str, tuple[int, float, str]] = {}
+    for rank, (doc, dist) in enumerate(zip(docs, dists)):
+        if dist > CLOSET_DISTANCE_CAP:
+            continue
+        preview = (doc or "")[:200]
+        for match in _CLOSET_DRAWER_REF_RE.findall(doc or ""):
+            for did in match.split(","):
+                did = did.strip()
+                if did and did not in boost_by_drawer:
+                    boost_by_drawer[did] = (rank, dist, preview)
+    return boost_by_drawer
+
+
 def search_drawers(
     query: str,
     wing: str | None = None,
     room: str | None = None,
-    n_results: int = 5,
+    n_results: int = 10,
     max_distance: float = 0.0,
 ) -> dict[str, Any]:
-    """Hybrid BM25+vector search over mycelium_drawers collection.
+    """Hybrid BM25 + vector search with optional closet-boost over drawers.
+
+    Three-stage ranking:
+      1. Vector retrieval (over-fetch 3x) on the drawers collection.
+      2. Closet boost: if a drawer is referenced by a query-matching closet,
+         shrink its effective distance by a rank-based amount. Closet hits
+         are a signal, never a gate — drawers without closet coverage still
+         compete on raw similarity.
+      3. BM25 hybrid re-rank within the candidate set so keyword matches
+         aren't drowned out by vector noise on technical content.
 
     Args:
         query: Natural language search query.
         wing: Optional wing filter (e.g. "mycelium", "rain").
         room: Optional room filter (e.g. "decisions", "code").
-        n_results: Max results to return.
+        n_results: Max results to return (default 10).
         max_distance: Cosine distance threshold. 0.0 = no filter. Typical: 0.3-0.85.
 
     Returns:
@@ -149,25 +207,52 @@ def search_drawers(
     metas = results["metadatas"][0] if results["metadatas"] else []
     dists = results["distances"][0] if results["distances"] else []
 
+    # Closet boosts — drawer_id → (rank, dist, preview)
+    boost_by_drawer = _closet_boosts(query, n_closets=n_results * 2)
+
     hits = []
     for doc, meta, dist in zip(docs, metas, dists):
         if max_distance > 0.0 and dist > max_distance:
             continue
         meta = meta or {}
-        hits.append({
-            "text":        doc or "",
-            "wing":        meta.get("wing", "unknown"),
-            "room":        meta.get("room", "unknown"),
-            "drawer_id":   meta.get("drawer_id", ""),
-            "source_file": meta.get("source_file", "?"),
-            "filed_at":    meta.get("filed_at", ""),
-            "similarity":  round(max(0.0, 1 - dist), 3),
-            "distance":    round(dist, 4),
-            "matched_via": "drawer",
-        })
+        did = meta.get("drawer_id", "")
+
+        boost = 0.0
+        matched_via = "drawer"
+        closet_preview: str | None = None
+        if did in boost_by_drawer:
+            c_rank, _c_dist, c_preview = boost_by_drawer[did]
+            if c_rank < len(CLOSET_RANK_BOOSTS):
+                boost = CLOSET_RANK_BOOSTS[c_rank]
+                matched_via = "drawer+closet"
+                closet_preview = c_preview
+
+        effective_dist = dist - boost
+
+        entry = {
+            "text":               doc or "",
+            "wing":               meta.get("wing", "unknown"),
+            "room":               meta.get("room", "unknown"),
+            "drawer_id":          did,
+            "source_file":        meta.get("source_file", "?"),
+            "filed_at":           meta.get("filed_at", ""),
+            "similarity":         round(max(0.0, 1 - effective_dist), 3),
+            "distance":           round(dist, 4),
+            "effective_distance": round(effective_dist, 4),
+            "closet_boost":       round(boost, 3),
+            "matched_via":        matched_via,
+            "_sort_key":          effective_dist,
+        }
+        if closet_preview:
+            entry["closet_preview"] = closet_preview
+        hits.append(entry)
+
+    hits.sort(key=lambda h: h["_sort_key"])
+    hits = hits[:n_results]
+    for h in hits:
+        h.pop("_sort_key", None)
 
     hybrid_rerank(hits, query)
-    hits = hits[:n_results]
 
     return {
         "query":               query,

@@ -61,23 +61,31 @@ mcp = FastMCP(
 @mcp.tool()
 def context(
     query: str,
-    n_notes: int = 5,
-    n_drawers: int = 5,
-    n_links: int = 5,
-    max_distance: float = 0.7,
+    n_notes: int = 10,
+    n_drawers: int = 10,
+    n_links: int = 10,
+    max_distance: float = 0.75,
+    expand_links: bool = True,
 ) -> str:
     """Retrieve combined context: curated notes + verbatim drawers + related links.
 
-    The primary tool for task start. Returns all three layers in one call.
-    From any note_id in the results, call query_links(note_id) to traverse
-    the knowledge graph further.
+    The primary tool for task start. Returns all three layers in one call, plus
+    optionally the graph neighborhood — outgoing links from any returned entity
+    so the agent sees connected content without a second tool call.
 
     Args:
         query: What you are looking for.
-        n_notes: Max curated notes (default 5).
-        n_drawers: Max verbatim drawers (default 5).
-        n_links: Max related links (default 5).
-        max_distance: Cosine distance ceiling for drawer results (default 0.7).
+        n_notes: Max curated notes (default 10).
+        n_drawers: Max verbatim drawers (default 10).
+        n_links: Max links found via semantic search on link descriptions (default 10).
+        max_distance: Cosine distance ceiling for drawer results (default 0.75).
+        expand_links: If True (default), also include outgoing links from each
+            returned note/drawer under "links_from_results". Provides the
+            graph neighborhood of the matched entities.
+
+    Returns:
+        JSON with notes, memories (drawers), links (semantic on descriptions),
+        and (if expand_links) links_from_results (graph edges from matches).
     """
     notes_result  = json.loads(query_notes(query, n_notes))
     notes         = notes_result.get("notes", [])
@@ -89,7 +97,41 @@ def context(
     links         = links_result.get("links", [])
 
     result: dict = {"query": query, "notes": notes, "memories": drawers, "links": links}
-    if not links:
+
+    if expand_links and (notes or drawers):
+        # Pull outgoing links for each top result's entity ID, dedupe by link_id
+        col = links_collection()
+        if col.count() > 0:
+            entity_ids: list[str] = []
+            for n in notes:
+                if n.get("note_id"):
+                    entity_ids.append(n["note_id"])
+            for d in drawers:
+                if d.get("drawer_id"):
+                    entity_ids.append(d["drawer_id"])
+
+            seen_link_ids = {l.get("link_id") for l in links}
+            expansion: list[dict] = []
+            for eid in entity_ids:
+                where = {"$and": [{"source_id": eid}, {"ended_at": ""}]}
+                hits = col.get(where=where, include=["metadatas"])
+                for meta in hits.get("metadatas", []):
+                    lid = _link_id_fn(meta["source_id"], meta["relation_type"], meta["target_id"])
+                    if lid in seen_link_ids:
+                        continue
+                    seen_link_ids.add(lid)
+                    expansion.append({
+                        "link_id":       lid,
+                        "from_entity":   eid,
+                        "source":        {"id": meta["source_id"], "label": meta["source_label"], "type": meta["source_type"]},
+                        "relation_type": meta["relation_type"],
+                        "target":        {"id": meta["target_id"], "label": meta["target_label"], "type": meta["target_type"]},
+                        "description":   meta["description"],
+                    })
+            if expansion:
+                result["links_from_results"] = expansion
+
+    if not links and not result.get("links_from_results"):
         result["links_hint"] = "No links yet — use add_link to start building the graph."
     return json.dumps(result, indent=2)
 
@@ -101,8 +143,8 @@ def context(
 @mcp.tool()
 def search(
     query: str,
-    n_results: int = 5,
-    max_distance: float = 0.7,
+    n_results: int = 10,
+    max_distance: float = 0.75,
     wing: Optional[str] = None,
     room: Optional[str] = None,
 ) -> str:
@@ -110,8 +152,8 @@ def search(
 
     Args:
         query: Natural-language search query.
-        n_results: Max results (default 5).
-        max_distance: Cosine distance ceiling (default 0.7). Lower = stricter.
+        n_results: Max results (default 10).
+        max_distance: Cosine distance ceiling (default 0.75). Lower = stricter.
         wing: Optional wing filter (project name).
         room: Optional room filter (aspect/subdirectory).
 
@@ -334,7 +376,7 @@ def delete_note(note_id: str) -> str:
 
 
 @mcp.tool()
-def query_notes(query: str, n_results: int = 5) -> str:
+def query_notes(query: str, n_results: int = 10) -> str:
     """Search curated synthesis notes by semantic similarity.
 
     Notes are more authoritative than drawers — they represent settled
@@ -488,14 +530,14 @@ def query_links(
 @mcp.tool()
 def find_links(
     query: str,
-    n_results: int = 5,
+    n_results: int = 10,
     include_historical: bool = False,
 ) -> str:
     """Search the knowledge graph by semantic similarity over link descriptions.
 
     Args:
         query: Natural-language description of the relationship you're looking for.
-        n_results: Max links (default 5).
+        n_results: Max links (default 10).
         include_historical: Include links with ended_at set (default False).
 
     Returns:
