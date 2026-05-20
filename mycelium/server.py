@@ -26,7 +26,9 @@ from mycelium.chroma import drawers_collection, links_collection, notes_collecti
 from mycelium.config import NOTES_DIR, VAULT_DIR
 from mycelium.search import search_drawers
 from mycelium.vault import (
+    chunk_content as _chunk_content,
     delete_drawer as _vault_delete_drawer,
+    delete_link_file as _vault_delete_link_file,
     delete_note as _vault_delete_note,
     diary_read as _vault_diary_read,
     diary_write as _vault_diary_write,
@@ -37,8 +39,10 @@ from mycelium.vault import (
     list_wings as _vault_list_wings,
     note_id as _note_id_fn,
     slugify as _slugify,
+    update_closet_for_drawer as _vault_update_closet_for_drawer,
     update_drawer as _vault_update_drawer,
     write_drawer as _vault_write_drawer,
+    write_link as _vault_write_link,
     write_note as _vault_write_note,
 )
 
@@ -192,6 +196,10 @@ def file(
     """
     did, filepath = _vault_write_drawer(content, wing, room)
     _index_drawer(did, content, wing, room, str(filepath))
+    try:
+        _vault_update_closet_for_drawer(did, wing, room, content)
+    except Exception:
+        pass  # closet update is best-effort, never blocks filing
     return f"Filed: {did} → {wing}/{room}"
 
 
@@ -461,10 +469,20 @@ def add_link(
     Returns:
         Confirmation with link_id.
     """
-    lid  = _link_id_fn(source_id, relation_type, target_id)
-    now  = datetime.now(timezone.utc).isoformat()
-    doc  = f"{source_label} {relation_type} {target_label}. {description}"
+    # Disk-first: write the link to vault/links/{id}.md (idempotent upsert)
+    lid, filepath = _vault_write_link(
+        source_id, source_type, source_label,
+        target_id, target_type, target_label,
+        relation_type, description, ended_at,
+    )
 
+    # Read back the persisted created_at (preserved across re-upserts)
+    from mycelium.vault import load_link
+    persisted = load_link(filepath) or {}
+    created_at = persisted.get("created_at") or datetime.now(timezone.utc).isoformat()
+
+    # Index in chroma (derived from disk)
+    doc = f"{source_label} {relation_type} {target_label}. {description}"
     links_collection().upsert(
         ids=[lid],
         documents=[doc],
@@ -477,7 +495,7 @@ def add_link(
             "target_label":  target_label,
             "relation_type": relation_type,
             "description":   description,
-            "created_at":    now,
+            "created_at":    created_at,
             "ended_at":      ended_at,
         }],
     )
@@ -573,7 +591,7 @@ def find_links(
 
 @mcp.tool()
 def delete_link(link_id: str) -> str:
-    """Delete a link from the knowledge graph.
+    """Delete a link from the knowledge graph (disk + index).
 
     Prefer marking links historical with ended_at over deleting them,
     to preserve the record of past relationships.
@@ -581,11 +599,12 @@ def delete_link(link_id: str) -> str:
     Args:
         link_id: The link_xxx ID to delete.
     """
+    _vault_delete_link_file(link_id)
     try:
         links_collection().delete(ids=[link_id])
-        return f"Deleted: {link_id}"
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+    except Exception:
+        pass
+    return f"Deleted: {link_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -722,17 +741,36 @@ def status() -> str:
 # ---------------------------------------------------------------------------
 
 def _index_drawer(did: str, content: str, wing: str, room: str, filepath: str) -> None:
-    drawers_collection().upsert(
-        ids=[did],
-        documents=[content],
-        metadatas=[{
-            "drawer_id":   did,
-            "wing":        wing,
-            "room":        room,
-            "filed_at":    datetime.now(timezone.utc).isoformat(),
-            "source_file": filepath,
-        }],
-    )
+    """Index a drawer's content into chroma, chunking if large.
+
+    When the drawer is being re-indexed (update), we first remove all existing
+    chunks for this drawer_id so chunk count changes don't leave orphans.
+    """
+    col = drawers_collection()
+    # Clean any prior chunks for this drawer_id (so an update with different
+    # chunk count doesn't leave stale chunks indexed)
+    existing = col.get(where={"drawer_id": did}, include=[])["ids"]
+    if existing:
+        col.delete(ids=existing)
+
+    chunks = _chunk_content(content)
+    total_chunks = len(chunks)
+    now = datetime.now(timezone.utc).isoformat()
+    ids, docs, metas = [], [], []
+    for i, chunk_text in enumerate(chunks):
+        chunk_id = did if total_chunks == 1 else f"{did}__c{i}"
+        ids.append(chunk_id)
+        docs.append(chunk_text)
+        metas.append({
+            "drawer_id":    did,
+            "chunk_index":  i,
+            "total_chunks": total_chunks,
+            "wing":         wing,
+            "room":         room,
+            "filed_at":     now,
+            "source_file":  filepath,
+        })
+    col.upsert(ids=ids, documents=docs, metadatas=metas)
 
 
 def _index_drawer_from_disk(did: str) -> None:

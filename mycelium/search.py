@@ -248,9 +248,25 @@ def search_drawers(
         hits.append(entry)
 
     hits.sort(key=lambda h: h["_sort_key"])
-    hits = hits[:n_results]
+
+    # Dedupe by drawer_id — keep the best-ranked chunk per parent drawer so a
+    # multi-chunk document doesn't crowd out other relevant drawers in the
+    # top-N. The chunk_index metadata is preserved so the agent knows which
+    # part of the drawer matched.
+    seen: set[str] = set()
+    deduped: list[dict] = []
     for h in hits:
+        did = h.get("drawer_id", "")
+        if did and did in seen:
+            continue
+        if did:
+            seen.add(did)
+        deduped.append(h)
+
+    deduped = deduped[:n_results]
+    for h in deduped:
         h.pop("_sort_key", None)
+    hits = deduped
 
     hybrid_rerank(hits, query)
 

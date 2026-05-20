@@ -11,6 +11,7 @@ NOTES_DIR    = VAULT_DIR / "notes"
 DRAWERS_DIR  = VAULT_DIR / "drawers"
 DIARY_DIR    = VAULT_DIR / "diary"
 CONCEPTS_DIR = VAULT_DIR / "concepts"
+LINKS_DIR    = VAULT_DIR / "links"
 
 HOST = os.environ.get("MYCELIUM_HOST", "0.0.0.0")
 PORT = int(os.environ.get("MYCELIUM_PORT", "9002"))

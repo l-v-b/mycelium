@@ -25,6 +25,7 @@ from mycelium.config import (
     CONCEPTS_DIR,
     DIARY_DIR,
     DRAWERS_DIR,
+    LINKS_DIR,
     NOTES_DIR,
     VAULT_DIR,
     VAULT_GIT_AUTHOR_EMAIL,
@@ -314,6 +315,84 @@ def list_drawers(wing: str | None = None, room: str | None = None, limit: int = 
 
 
 # ---------------------------------------------------------------------------
+# Links (typed semantic edges, persisted disk-first)
+# ---------------------------------------------------------------------------
+
+def write_link(
+    source_id: str, source_type: str, source_label: str,
+    target_id: str, target_type: str, target_label: str,
+    relation_type: str, description: str,
+    ended_at: str = "",
+) -> tuple[str, Path]:
+    """Persist a typed link as vault/links/{link_id}.md. Frontmatter holds the
+    structured fields; the body is empty (links have no narrative content).
+    Returns (link_id, filepath).
+    """
+    lid = link_id(source_id, relation_type, target_id)
+    now = datetime.now(timezone.utc).isoformat()
+
+    LINKS_DIR.mkdir(parents=True, exist_ok=True)
+    filepath = LINKS_DIR / f"{lid}.md"
+
+    # Preserve created_at if file already exists (so re-upsert doesn't reset it)
+    created_at = now
+    if filepath.exists():
+        try:
+            existing = frontmatter.load(str(filepath))
+            created_at = existing.get("created_at", now)
+        except Exception:
+            pass
+
+    post = frontmatter.Post(
+        "",  # empty body — all data in frontmatter
+        link_id=lid,
+        source_id=source_id,
+        source_type=source_type,
+        source_label=source_label,
+        target_id=target_id,
+        target_type=target_type,
+        target_label=target_label,
+        relation_type=relation_type,
+        description=description,
+        created_at=created_at,
+        ended_at=ended_at,
+    )
+    filepath.write_text(frontmatter.dumps(post), encoding="utf-8")
+    _git_commit(f"link: {source_label} --[{relation_type}]--> {target_label}")
+    return lid, filepath
+
+
+def load_link(filepath: Path) -> dict[str, Any] | None:
+    try:
+        post = frontmatter.load(str(filepath))
+        return {
+            "link_id":       post.get("link_id", filepath.stem),
+            "source_id":     post.get("source_id", ""),
+            "source_type":   post.get("source_type", ""),
+            "source_label":  post.get("source_label", ""),
+            "target_id":     post.get("target_id", ""),
+            "target_type":   post.get("target_type", ""),
+            "target_label":  post.get("target_label", ""),
+            "relation_type": post.get("relation_type", ""),
+            "description":   post.get("description", ""),
+            "created_at":    post.get("created_at", ""),
+            "ended_at":      post.get("ended_at", ""),
+            "filepath":      str(filepath),
+        }
+    except Exception:
+        return None
+
+
+def delete_link_file(lid: str) -> bool:
+    filepath = LINKS_DIR / f"{lid}.md"
+    if not filepath.exists():
+        return False
+    filepath.unlink()
+    _git_commit(f"delete link: {lid}")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Diary
 # ---------------------------------------------------------------------------
 
@@ -379,6 +458,210 @@ def diary_read(date: str | None = None, n_days: int = 3) -> str:
 # ---------------------------------------------------------------------------
 
 REINDEX_BATCH_SIZE = 500
+
+# Chunk drawers larger than this when indexing into ChromaDB. Each chunk
+# gets its own embedding so a long document can be matched on any of its
+# subsections, then expanded back to full content via get_drawer().
+CHUNK_THRESHOLD = 2000   # chars; smaller drawers index as a single chunk
+CHUNK_SIZE      = 2000   # target max chars per chunk
+CHUNK_OVERLAP   = 200    # overlap to bridge concept boundaries
+
+
+# ---------------------------------------------------------------------------
+# Closet generation
+# ---------------------------------------------------------------------------
+
+# Closets group drawers by topical cluster so a query that matches the
+# cluster's collective vibe can boost any drawer in it. One closet per
+# (wing, room) for now — finer-grained topic clustering can replace this
+# later. The closet document format follows mempalace's:
+#   "topic|entities|→drawer_id_a,drawer_id_b,..."
+# multiple lines per closet stack additional topics. We emit a single line
+# per (wing, room) cluster.
+
+_ENTITY_RE = re.compile(r"(?:[A-Z][a-zA-Z0-9]{2,})|(?:[a-z_][a-z0-9_]{4,})", re.UNICODE)
+
+
+def _extract_entities(content: str, max_entities: int = 12) -> list[str]:
+    """Pull a small set of distinguishing tokens (CamelCase or snake_case)
+    that are likely to be entity-ish — names, identifiers, technical terms.
+    """
+    seen: dict[str, None] = {}
+    for match in _ENTITY_RE.finditer(content):
+        tok = match.group()
+        if tok.lower() in seen:
+            continue
+        seen[tok.lower()] = None
+        if len(seen) >= max_entities:
+            break
+    return list(seen.keys())
+
+
+def closet_id(wing: str, room: str) -> str:
+    key = f"{wing}:{room}"
+    return "closet_" + hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def regenerate_closets() -> tuple[int, int]:
+    """Rebuild the closets collection from scratch using current drawers.
+
+    One closet per (wing, room) cluster. Boost is granted to all drawers in
+    that cluster when the cluster's topic matches the query. Orphan closets
+    (whose wing/room has no drawers) are pruned.
+
+    Returns (upserted, deleted_orphans).
+    """
+    from mycelium.chroma import closets_collection
+
+    col = closets_collection()
+
+    # Group drawers by (wing, room) from disk
+    clusters: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    if DRAWERS_DIR.exists():
+        for f in DRAWERS_DIR.glob("*.md"):
+            d = get_drawer(f.stem)
+            if not d:
+                continue
+            key = (d["wing"], d["room"])
+            clusters.setdefault(key, []).append((d["drawer_id"], d["content"]))
+    if DIARY_DIR.exists():
+        for f in DIARY_DIR.glob("*.md"):
+            date_str = f.stem
+            key = ("wing_claude", "diary")
+            clusters.setdefault(key, []).append((f"diary_{date_str}", f.read_text(encoding="utf-8")[:2000]))
+
+    disk_ids = {closet_id(wing, room) for (wing, room) in clusters.keys()}
+    indexed_ids = set(col.get(include=[])["ids"])
+    orphans = list(indexed_ids - disk_ids)
+    if orphans:
+        col.delete(ids=orphans)
+
+    import time
+    t0 = time.time()
+    total = len(clusters)
+    batch_ids: list[str] = []
+    batch_docs: list[str] = []
+    batch_metas: list[dict] = []
+    upserted = 0
+
+    def _flush() -> None:
+        nonlocal upserted
+        if not batch_ids:
+            return
+        col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
+        upserted += len(batch_ids)
+        print(_progress("closets", upserted, total, t0), flush=True)
+        batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
+
+    for (wing, room), members in clusters.items():
+        drawer_ids = [did for did, _ in members]
+        # Sample text from a few members for entity extraction (cap to avoid huge inputs)
+        sample_text = " ".join(content[:800] for _, content in members[:10])
+        entities = _extract_entities(sample_text)
+        topic = f"{wing}/{room}"
+        # Closet document format mirrors mempalace: topic|entities|→id1,id2,...
+        doc = f"{topic}|{';'.join(entities)}|→{','.join(drawer_ids)}"
+        batch_ids.append(closet_id(wing, room))
+        batch_docs.append(doc)
+        batch_metas.append({
+            "wing":         wing,
+            "room":         room,
+            "topic":        topic,
+            "entities":     ";".join(entities),
+            "drawer_count": len(drawer_ids),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        if len(batch_ids) >= REINDEX_BATCH_SIZE:
+            _flush()
+    _flush()
+    return upserted, len(orphans)
+
+
+def update_closet_for_drawer(drawer_id: str, wing: str, room: str, content: str) -> None:
+    """Incrementally add a new drawer to its (wing, room) closet.
+
+    Called from write_drawer so freshly filed content gets closet coverage
+    without waiting for a full regenerate_closets pass. If the closet exists,
+    appends the drawer_id to its pointer list and refreshes entities. If not,
+    creates one.
+    """
+    from mycelium.chroma import closets_collection
+
+    col   = closets_collection()
+    cid   = closet_id(wing, room)
+    topic = f"{wing}/{room}"
+
+    existing = col.get(ids=[cid], include=["documents", "metadatas"])
+    drawer_ids: list[str] = []
+    entities_set: dict[str, None] = {}
+    if existing.get("ids"):
+        doc = (existing["documents"] or [""])[0] or ""
+        for match in _CLOSET_DRAWER_REF_RE.findall(doc):
+            for did in match.split(","):
+                did = did.strip()
+                if did and did not in drawer_ids:
+                    drawer_ids.append(did)
+        meta = (existing.get("metadatas") or [{}])[0] or {}
+        for e in (meta.get("entities") or "").split(";"):
+            if e:
+                entities_set[e] = None
+
+    if drawer_id not in drawer_ids:
+        drawer_ids.append(drawer_id)
+
+    for e in _extract_entities(content):
+        if len(entities_set) >= 12:
+            break
+        entities_set.setdefault(e, None)
+    entities = list(entities_set.keys())
+
+    doc = f"{topic}|{';'.join(entities)}|→{','.join(drawer_ids)}"
+    col.upsert(
+        ids=[cid],
+        documents=[doc],
+        metadatas=[{
+            "wing":         wing,
+            "room":         room,
+            "topic":        topic,
+            "entities":     ";".join(entities),
+            "drawer_count": len(drawer_ids),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }],
+    )
+
+
+# Closet pointer regex shared with search.py for parsing closet documents
+_CLOSET_DRAWER_REF_RE = re.compile(r"→([\w,]+)")
+
+
+def chunk_content(content: str, max_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
+    """Split content into chunks for embedding. Prefers paragraph boundaries.
+
+    Returns a single-element list if content is small enough; otherwise
+    overlapping chunks of approximately max_size chars each.
+    """
+    if len(content) <= CHUNK_THRESHOLD:
+        return [content]
+
+    chunks: list[str] = []
+    pos = 0
+    n = len(content)
+    while pos < n:
+        end = min(pos + max_size, n)
+        if end < n:
+            # Try to break at a paragraph boundary near the target end
+            cut = content.rfind("\n\n", pos, end)
+            if cut == -1 or cut < pos + max_size // 2:
+                cut = content.rfind("\n", pos, end)
+            if cut == -1 or cut < pos + max_size // 2:
+                cut = content.rfind(". ", pos, end)
+            if cut != -1 and cut > pos + max_size // 2:
+                end = cut
+        chunks.append(content[pos:end].strip())
+        if end >= n:
+            break
+        pos = max(end - overlap, pos + 1)
+    return [c for c in chunks if c]
 
 
 def _progress(label: str, done: int, total: int, t0: float) -> str:
@@ -496,16 +779,92 @@ def reindex_drawers() -> tuple[int, int]:
 
     col = drawers_collection()
 
-    # Drawer filename IS the drawer_id (no YAML parse needed for orphan check)
+    # Disk drawer_ids (one parent per file); chroma may have multi-chunk entries
+    # whose IDs look like "{drawer_id}__c{N}". Strip the suffix for the orphan
+    # check so we don't accidentally prune valid chunks of existing drawers.
     drawer_disk_ids: set[str] = (
         {f.stem for f in DRAWERS_DIR.glob("*.md")} if DRAWERS_DIR.exists() else set()
     )
-    # Diary files are indexed as drawers with id=diary_YYYY-MM-DD
     diary_disk_ids: set[str] = (
         {f"diary_{f.stem}" for f in DIARY_DIR.glob("*.md")} if DIARY_DIR.exists() else set()
     )
     disk_ids = drawer_disk_ids | diary_disk_ids
 
+    def _parent_id(chroma_id: str) -> str:
+        return chroma_id.split("__c", 1)[0] if "__c" in chroma_id else chroma_id
+
+    indexed_ids = col.get(include=[])["ids"]
+    orphans = [cid for cid in indexed_ids if _parent_id(cid) not in disk_ids]
+    if orphans:
+        col.delete(ids=orphans)
+
+    import time
+    total = len(disk_ids)
+    t0 = time.time()
+    batch_ids: list[str] = []
+    batch_docs: list[str] = []
+    batch_metas: list[dict] = []
+    upserted = 0  # counts parent drawers processed, not chunks
+
+    def _flush() -> None:
+        if not batch_ids:
+            return
+        col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
+        print(_progress("drawers", upserted, total, t0), flush=True)
+        batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
+
+    def _enqueue_drawer(did: str, content: str, wing: str, room: str, filed_at: str, source_file: str) -> None:
+        nonlocal upserted
+        chunks = chunk_content(content)
+        total_chunks = len(chunks)
+        for i, chunk_text in enumerate(chunks):
+            chunk_id = did if total_chunks == 1 else f"{did}__c{i}"
+            batch_ids.append(chunk_id)
+            batch_docs.append(chunk_text)
+            batch_metas.append({
+                "drawer_id":    did,
+                "chunk_index":  i,
+                "total_chunks": total_chunks,
+                "wing":         wing,
+                "room":         room,
+                "filed_at":     filed_at,
+                "source_file":  source_file,
+            })
+        upserted += 1
+        if len(batch_ids) >= REINDEX_BATCH_SIZE:
+            _flush()
+
+    # Regular drawers
+    for f in (DRAWERS_DIR.glob("*.md") if DRAWERS_DIR.exists() else []):
+        d = get_drawer(f.stem)
+        if not d:
+            continue
+        _enqueue_drawer(d["drawer_id"], d["content"], d["wing"], d["room"], d["filed_at"], d["filepath"])
+
+    # Diary days indexed as drawers (id = diary_YYYY-MM-DD)
+    for f in (DIARY_DIR.glob("*.md") if DIARY_DIR.exists() else []):
+        date_str = f.stem
+        _enqueue_drawer(f"diary_{date_str}", f.read_text(encoding="utf-8"),
+                        "wing_claude", "diary", date_str, str(f))
+
+    _flush()
+    return upserted, len(orphans)
+
+
+def reindex_links() -> tuple[int, int]:
+    """Sync mycelium_links ChromaDB collection with vault/links/.
+
+    Returns (upserted, deleted_orphans). Links are markdown files with empty
+    body — all data in frontmatter. The chroma document text is constructed
+    from the same fields used by find_links so semantic search still works.
+    """
+    from mycelium.chroma import links_collection
+
+    col = links_collection()
+
+    disk_ids: set[str] = (
+        {f.stem for f in LINKS_DIR.glob("*.md")} if LINKS_DIR.exists() else set()
+    )
     indexed_ids = set(col.get(include=[])["ids"])
     orphans = list(indexed_ids - disk_ids)
     if orphans:
@@ -525,40 +884,29 @@ def reindex_drawers() -> tuple[int, int]:
             return
         col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
         upserted += len(batch_ids)
-        print(_progress("drawers", upserted, total, t0), flush=True)
+        print(_progress("links", upserted, total, t0), flush=True)
         batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
 
-    # Regular drawers
-    for f in (DRAWERS_DIR.glob("*.md") if DRAWERS_DIR.exists() else []):
-        d = get_drawer(f.stem)
-        if not d:
+    for f in (LINKS_DIR.glob("*.md") if LINKS_DIR.exists() else []):
+        link = load_link(f)
+        if not link:
             continue
-        batch_ids.append(d["drawer_id"])
-        batch_docs.append(d["content"])
+        doc = f"{link['source_label']} {link['relation_type']} {link['target_label']}. {link['description']}"
+        batch_ids.append(link["link_id"])
+        batch_docs.append(doc)
         batch_metas.append({
-            "drawer_id":   d["drawer_id"],
-            "wing":        d["wing"],
-            "room":        d["room"],
-            "filed_at":    d["filed_at"],
-            "source_file": d["filepath"],
+            "source_id":     link["source_id"],
+            "source_type":   link["source_type"],
+            "source_label":  link["source_label"],
+            "target_id":     link["target_id"],
+            "target_type":   link["target_type"],
+            "target_label":  link["target_label"],
+            "relation_type": link["relation_type"],
+            "description":   link["description"],
+            "created_at":    link["created_at"],
+            "ended_at":      link["ended_at"],
         })
         if len(batch_ids) >= REINDEX_BATCH_SIZE:
             _flush()
-
-    # Diary days as drawers (room=diary, wing=wing_claude)
-    for f in (DIARY_DIR.glob("*.md") if DIARY_DIR.exists() else []):
-        date_str = f.stem
-        batch_ids.append(f"diary_{date_str}")
-        batch_docs.append(f.read_text(encoding="utf-8"))
-        batch_metas.append({
-            "drawer_id":   f"diary_{date_str}",
-            "wing":        "wing_claude",
-            "room":        "diary",
-            "filed_at":    date_str,
-            "source_file": str(f),
-        })
-        if len(batch_ids) >= REINDEX_BATCH_SIZE:
-            _flush()
-
     _flush()
     return upserted, len(orphans)

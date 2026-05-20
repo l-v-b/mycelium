@@ -115,11 +115,23 @@ def cmd_reindex(args: list[str]) -> None:
             os.environ.setdefault(var, threads)
         print(f"Limiting ONNX threads to {threads}")
 
-    from mycelium.vault import reindex_notes, reindex_drawers
+    from mycelium.vault import reindex_notes, reindex_drawers, reindex_links
     n_up, n_orph = reindex_notes()
     d_up, d_orph = reindex_drawers()
+    l_up, l_orph = reindex_links()
     print(f"Notes:   {n_up} upserted, {n_orph} orphans pruned")
     print(f"Drawers: {d_up} upserted, {d_orph} orphans pruned")
+    print(f"Links:   {l_up} upserted, {l_orph} orphans pruned")
+
+
+def cmd_regenerate_closets(args: list[str]) -> None:
+    """Rebuild closets collection from current drawers (run after bulk imports
+    or when search quality drifts). Closets group drawers by (wing, room)
+    and provide a ranking boost when the cluster matches a query.
+    """
+    from mycelium.vault import regenerate_closets
+    c_up, c_orph = regenerate_closets()
+    print(f"Closets: {c_up} upserted, {c_orph} orphans pruned")
 
 
 def main() -> None:
@@ -127,16 +139,18 @@ def main() -> None:
     if not args or args[0] in ("-h", "--help"):
         print("Usage: mycelium <command> [args]")
         print("\nCommands:")
-        print("  install    Deploy hooks to ~/.mycelium/ and print settings.json snippet")
-        print("  verify     Health check: imports, vault, index counts")
-        print("  reindex    Rebuild ChromaDB from vault/ markdown files")
+        print("  install              Deploy hooks to ~/.mycelium/ + print/write settings.json snippet")
+        print("  verify               Health check: imports, vault, index counts")
+        print("  reindex              Sync ChromaDB (notes, drawers, links) with vault/ markdown files")
+        print("  regenerate-closets   Rebuild closet topical-cluster index from current drawers")
         return
 
     cmd, rest = args[0], args[1:]
     dispatch = {
-        "install": cmd_install,
-        "verify":  cmd_verify,
-        "reindex": cmd_reindex,
+        "install":             cmd_install,
+        "verify":              cmd_verify,
+        "reindex":             cmd_reindex,
+        "regenerate-closets":  cmd_regenerate_closets,
     }
     fn = dispatch.get(cmd)
     if fn:
