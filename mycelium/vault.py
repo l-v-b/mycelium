@@ -356,6 +356,20 @@ def diary_read(date: str | None = None, n_days: int = 3) -> str:
 REINDEX_BATCH_SIZE = 500
 
 
+def _progress(label: str, done: int, total: int, t0: float) -> str:
+    """Format a progress line with rate + ETA."""
+    import time
+    elapsed = max(time.time() - t0, 0.001)
+    rate = done / elapsed
+    if rate > 0 and done < total:
+        eta_sec = (total - done) / rate
+        eta = f"eta {eta_sec/60:.0f}m" if eta_sec > 60 else f"eta {eta_sec:.0f}s"
+    else:
+        eta = "done" if done >= total else "?"
+    pct = 100 * done / total if total else 0
+    return f"  {label}: {done}/{total} ({pct:.0f}%) @ {rate:.0f}/s {eta}"
+
+
 def reindex_notes() -> tuple[int, int]:
     """Sync mycelium_notes ChromaDB collection with vault/notes/.
 
@@ -377,6 +391,9 @@ def reindex_notes() -> tuple[int, int]:
         col.delete(ids=orphans)
 
     # Stream-upsert in batches
+    import time
+    total = len(disk_ids)
+    t0 = time.time()
     batch_ids: list[str] = []
     batch_docs: list[str] = []
     batch_metas: list[dict] = []
@@ -398,12 +415,12 @@ def reindex_notes() -> tuple[int, int]:
         if len(batch_ids) >= REINDEX_BATCH_SIZE:
             col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
             upserted += len(batch_ids)
-            print(f"  notes: {upserted} indexed", flush=True)
+            print(_progress("notes", upserted, total, t0), flush=True)
             batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
     if batch_ids:
         col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
         upserted += len(batch_ids)
-        print(f"  notes: {upserted} indexed", flush=True)
+        print(_progress("notes", upserted, total, t0), flush=True)
 
     return upserted, len(orphans)
 
@@ -427,6 +444,9 @@ def reindex_drawers() -> tuple[int, int]:
     if orphans:
         col.delete(ids=orphans)
 
+    import time
+    total = len(disk_ids)
+    t0 = time.time()
     batch_ids: list[str] = []
     batch_docs: list[str] = []
     batch_metas: list[dict] = []
@@ -447,11 +467,11 @@ def reindex_drawers() -> tuple[int, int]:
         if len(batch_ids) >= REINDEX_BATCH_SIZE:
             col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
             upserted += len(batch_ids)
-            print(f"  drawers: {upserted} indexed", flush=True)
+            print(_progress("drawers", upserted, total, t0), flush=True)
             batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
     if batch_ids:
         col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
         upserted += len(batch_ids)
-        print(f"  drawers: {upserted} indexed", flush=True)
+        print(_progress("drawers", upserted, total, t0), flush=True)
 
     return upserted, len(orphans)
