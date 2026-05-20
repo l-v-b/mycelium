@@ -22,6 +22,7 @@ from typing import Any
 import frontmatter
 
 from mycelium.config import (
+    CONCEPTS_DIR,
     DIARY_DIR,
     DRAWERS_DIR,
     NOTES_DIR,
@@ -394,20 +395,31 @@ def _progress(label: str, done: int, total: int, t0: float) -> str:
     return f"  {label}: {done}/{total} ({pct:.0f}%) @ {rate:.0f}/s {eta}"
 
 
-def reindex_notes() -> tuple[int, int]:
-    """Sync mycelium_notes ChromaDB collection with vault/notes/.
+def _concept_id(slug: str) -> str:
+    return "concept_" + hashlib.sha256(slug.encode()).hexdigest()[:16]
 
-    Streams files in batches — loads, upserts, frees memory. Returns
-    (upserted, deleted_orphans).
+
+def reindex_notes() -> tuple[int, int]:
+    """Sync mycelium_notes ChromaDB collection with vault/notes/ + vault/concepts/.
+
+    Streams files in batches — loads, upserts, frees memory. Concepts are
+    indexed into the same collection with metadata type="concept" so they
+    surface in query_notes and context but stay distinguishable from notes.
+
+    Returns (upserted, deleted_orphans).
     """
     from mycelium.chroma import notes_collection
 
     col = notes_collection()
 
-    # Orphan check by filename → derived note_id (slug-based), no YAML parse
-    disk_ids: set[str] = (
+    # Orphan check by filename → derived id (slug-based), no YAML parse
+    note_disk_ids: set[str] = (
         {note_id(f.stem) for f in NOTES_DIR.glob("*.md")} if NOTES_DIR.exists() else set()
     )
+    concept_disk_ids: set[str] = (
+        {_concept_id(f.stem) for f in CONCEPTS_DIR.glob("*.md")} if CONCEPTS_DIR.exists() else set()
+    )
+    disk_ids = note_disk_ids | concept_disk_ids
 
     indexed_ids = set(col.get(include=[])["ids"])
     orphans = list(indexed_ids - disk_ids)
@@ -422,6 +434,17 @@ def reindex_notes() -> tuple[int, int]:
     batch_docs: list[str] = []
     batch_metas: list[dict] = []
     upserted = 0
+
+    def _flush() -> None:
+        nonlocal upserted
+        if not batch_ids:
+            return
+        col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
+        upserted += len(batch_ids)
+        print(_progress("notes+concepts", upserted, total, t0), flush=True)
+        batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
+
+    # Notes
     for f in (NOTES_DIR.glob("*.md") if NOTES_DIR.exists() else []):
         n = load_note(f)
         if not n:
@@ -429,6 +452,7 @@ def reindex_notes() -> tuple[int, int]:
         batch_ids.append(n["note_id"])
         batch_docs.append(f"{n['title']}\n\n{n['content']}")
         batch_metas.append({
+            "type":            "note",
             "title":           n["title"],
             "slug":            slugify(n["title"]),
             "tags":            json.dumps(n["tags"]),
@@ -437,15 +461,29 @@ def reindex_notes() -> tuple[int, int]:
             "filepath":        n["filepath"],
         })
         if len(batch_ids) >= REINDEX_BATCH_SIZE:
-            col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
-            upserted += len(batch_ids)
-            print(_progress("notes", upserted, total, t0), flush=True)
-            batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
-    if batch_ids:
-        col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
-        upserted += len(batch_ids)
-        print(_progress("notes", upserted, total, t0), flush=True)
+            _flush()
 
+    # Concepts
+    for f in (CONCEPTS_DIR.glob("*.md") if CONCEPTS_DIR.exists() else []):
+        try:
+            post = frontmatter.load(str(f))
+        except Exception:
+            continue
+        slug  = f.stem
+        title = post.get("title", slug)
+        batch_ids.append(_concept_id(slug))
+        batch_docs.append(f"{title}\n\n{post.content}")
+        batch_metas.append({
+            "type":     "concept",
+            "title":    title,
+            "slug":     slug,
+            "tags":     json.dumps(post.get("tags", []) or []),
+            "filepath": str(f),
+        })
+        if len(batch_ids) >= REINDEX_BATCH_SIZE:
+            _flush()
+
+    _flush()
     return upserted, len(orphans)
 
 
