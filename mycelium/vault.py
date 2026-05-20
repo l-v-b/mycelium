@@ -323,6 +323,27 @@ def diary_read(date: str | None = None, n_days: int = 3) -> str:
 # Index rebuild (ChromaDB from disk)
 # ---------------------------------------------------------------------------
 
+REINDEX_BATCH_SIZE = 500
+
+
+def _batched_upsert(col, ids: list[str], documents: list[str], metadatas: list[dict],
+                    batch_size: int = REINDEX_BATCH_SIZE,
+                    progress_label: str = "") -> None:
+    """Upsert in batches. ChromaDB embeds each batch in one call which is
+    100x faster than one-at-a-time for large collections (e.g. 97k drawers).
+    """
+    n = len(ids)
+    for start in range(0, n, batch_size):
+        end = min(start + batch_size, n)
+        col.upsert(
+            ids=ids[start:end],
+            documents=documents[start:end],
+            metadatas=metadatas[start:end],
+        )
+        if progress_label and (end % (batch_size * 10) == 0 or end == n):
+            print(f"  {progress_label}: {end}/{n} indexed", flush=True)
+
+
 def reindex_notes() -> tuple[int, int]:
     """Sync mycelium_notes ChromaDB collection with vault/notes/.
 
@@ -342,19 +363,19 @@ def reindex_notes() -> tuple[int, int]:
     if orphans:
         col.delete(ids=orphans)
 
-    for note in disk_notes:
-        col.upsert(
-            ids=[note["note_id"]],
-            documents=[f"{note['title']}\n\n{note['content']}"],
-            metadatas=[{
-                "title":           note["title"],
-                "slug":            slugify(note["title"]),
-                "tags":            json.dumps(note["tags"]),
-                "source_memories": json.dumps(note["source_memories"]),
-                "created_at":      note["created_at"],
-                "filepath":        note["filepath"],
-            }],
-        )
+    ids, docs, metas = [], [], []
+    for n in disk_notes:
+        ids.append(n["note_id"])
+        docs.append(f"{n['title']}\n\n{n['content']}")
+        metas.append({
+            "title":           n["title"],
+            "slug":            slugify(n["title"]),
+            "tags":            json.dumps(n["tags"]),
+            "source_memories": json.dumps(n["source_memories"]),
+            "created_at":      n["created_at"],
+            "filepath":        n["filepath"],
+        })
+    _batched_upsert(col, ids, docs, metas, progress_label="notes")
     return len(disk_notes), len(orphans)
 
 
@@ -376,16 +397,16 @@ def reindex_drawers() -> tuple[int, int]:
     if orphans:
         col.delete(ids=orphans)
 
+    ids, docs, metas = [], [], []
     for d in disk_drawers:
-        col.upsert(
-            ids=[d["drawer_id"]],
-            documents=[d["content"]],
-            metadatas=[{
-                "drawer_id":   d["drawer_id"],
-                "wing":        d["wing"],
-                "room":        d["room"],
-                "filed_at":    d["filed_at"],
-                "source_file": d["filepath"],
-            }],
-        )
+        ids.append(d["drawer_id"])
+        docs.append(d["content"])
+        metas.append({
+            "drawer_id":   d["drawer_id"],
+            "wing":        d["wing"],
+            "room":        d["room"],
+            "filed_at":    d["filed_at"],
+            "source_file": d["filepath"],
+        })
+    _batched_upsert(col, ids, docs, metas, progress_label="drawers")
     return len(disk_drawers), len(orphans)
