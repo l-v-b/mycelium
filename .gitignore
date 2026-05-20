@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.uv/
+
+# Data (vault lives in a separate repo)
+/data/
+
+# IDE
+.idea/
+.vscode/
+*.swp

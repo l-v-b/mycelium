@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mycelium"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=2.0",
+    "chromadb>=0.6",
+    "pydantic>=2.0",
+    "python-frontmatter>=1.1",
+]
+
+[project.scripts]
+mycelium = "mycelium.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mycelium"]
+artifacts = ["mycelium/hooks/*.py"]
