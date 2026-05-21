@@ -55,8 +55,11 @@ def _git_args() -> list[str]:
 
 
 def _git_commit(message: str) -> None:
-    """Stage and commit current vault changes. Logs failures rather than
-    swallowing them silently.
+    """Stage and commit current vault changes, then fire an async push.
+
+    Push happens in the background so the write path isn't blocked on
+    network I/O. Failures are logged to ~/.mycelium/git.log rather than
+    swallowed silently.
     """
     if not VAULT_GIT_AUTHOR_NAME:
         return
@@ -72,10 +75,39 @@ def _git_commit(message: str) -> None:
             capture_output=True,
         )
         # Exit code 1 with "nothing to commit" is normal (no changes staged).
-        if result.returncode != 0 and b"nothing to commit" not in result.stdout + result.stderr:
+        if result.returncode == 0:
+            _git_push_async()
+        elif b"nothing to commit" not in result.stdout + result.stderr:
             _log_git_failure(message, result.stderr.decode("utf-8", "replace"))
     except (OSError, subprocess.SubprocessError) as e:
         _log_git_failure(message, str(e))
+
+
+def _git_push_async() -> None:
+    """Fire-and-forget `git push origin HEAD`. Output appended to git.log.
+
+    Uses Popen with no wait so callers return as soon as the local commit
+    is done. The child process keeps writing to the log fd after the
+    parent closes its handle (fd is dup'd at fork time).
+    """
+    try:
+        _GIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = open(_GIT_LOG, "a")
+        try:
+            log_fh.write(
+                f"[{datetime.now(timezone.utc).isoformat()}] push initiated\n"
+            )
+            log_fh.flush()
+            subprocess.Popen(
+                _git_args() + ["push", "origin", "HEAD"],
+                stdout=log_fh,
+                stderr=log_fh,
+                start_new_session=True,
+            )
+        finally:
+            log_fh.close()
+    except (OSError, subprocess.SubprocessError) as e:
+        _log_git_failure("push", str(e))
 
 
 def _log_git_failure(message: str, error: str) -> None:

@@ -695,27 +695,47 @@ def get_taxonomy() -> str:
     overview of what's in the vault. Reads from the drawers ChromaDB
     collection so it reflects what search would find.
 
+    Counts are deduplicated by canonical drawer_id (multi-chunk drawers
+    with IDs like `{drawer_id}__c{N}` count once).
+
     Returns:
         JSON with structure {"taxonomy": {wing: {room: count, ...}, ...}}.
     """
-    col   = drawers_collection()
-    count = col.count()
-    if count == 0:
+    col          = drawers_collection()
+    total_chunks = col.count()
+    if total_chunks == 0:
         return json.dumps({"taxonomy": {}, "total": 0})
 
-    all_meta = col.get(include=["metadatas"])["metadatas"]
     taxonomy: dict[str, dict[str, int]] = {}
-    for m in all_meta:
-        m = m or {}
-        w = m.get("wing", "unknown")
-        r = m.get("room", "unknown")
-        taxonomy.setdefault(w, {})
-        taxonomy[w][r] = taxonomy[w].get(r, 0) + 1
+    seen_drawers: set[str] = set()
+
+    # Chunked pagination — ChromaDB's underlying SQLite has a 999-param
+    # default limit on IN-clauses, so an unbounded col.get() blows up
+    # past ~1k items. 500 keeps margin for the other bound params.
+    batch  = 500
+    offset = 0
+    while offset < total_chunks:
+        page  = col.get(include=["metadatas"], limit=batch, offset=offset)
+        ids   = page.get("ids") or []
+        metas = page.get("metadatas") or []
+        for did, m in zip(ids, metas):
+            # Strip __cN chunk suffix to get the canonical drawer ID.
+            canonical = did.split("__c", 1)[0]
+            if canonical in seen_drawers:
+                continue
+            seen_drawers.add(canonical)
+            m = m or {}
+            w = m.get("wing", "unknown")
+            r = m.get("room", "unknown")
+            taxonomy.setdefault(w, {})
+            taxonomy[w][r] = taxonomy[w].get(r, 0) + 1
+        offset += batch
+
     # Sort wings and rooms for stable output
     taxonomy_sorted = {
         w: dict(sorted(rooms.items())) for w, rooms in sorted(taxonomy.items())
     }
-    return json.dumps({"taxonomy": taxonomy_sorted, "total": count}, indent=2)
+    return json.dumps({"taxonomy": taxonomy_sorted, "total": len(seen_drawers)}, indent=2)
 
 
 @mcp.tool()
