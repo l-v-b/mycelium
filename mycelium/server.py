@@ -37,6 +37,7 @@ from mycelium.vault import (
     list_drawers as _vault_list_drawers,
     list_rooms as _vault_list_rooms,
     list_wings as _vault_list_wings,
+    load_note as _vault_load_note,
     note_id as _note_id_fn,
     slugify as _slugify,
     update_closet_for_drawer as _vault_update_closet_for_drawer,
@@ -324,6 +325,7 @@ def write_note(
     content: str,
     tags: Optional[list[str]] = None,
     source_memories: Optional[list[str]] = None,
+    status: Optional[str] = None,
 ) -> str:
     """Write or update a curated synthesis note.
 
@@ -339,6 +341,10 @@ def write_note(
         content: Full Markdown. Use ## Context, ## Decision/Conclusion, ## Rationale.
         tags: Topic tags (e.g. ["infra", "decision"]).
         source_memories: Drawer IDs this note was derived from.
+        status: Optional. Set when this note represents tracked work.
+            Canonical values: "open" | "in-progress" | "done" | "wont-fix" | "blocked".
+            Leave unset (None) for synthesis notes that aren't work items, or
+            on upsert to preserve the existing status. Pass "" to clear.
 
     Returns:
         Confirmation with note_id and file path.
@@ -346,20 +352,27 @@ def write_note(
     tags = tags or []
     source_memories = source_memories or []
 
-    nid, filepath = _vault_write_note(title, content, tags, source_memories)
+    nid, filepath = _vault_write_note(title, content, tags, source_memories, status)
     now = datetime.now(timezone.utc).isoformat()
+
+    loaded = _vault_load_note(filepath)
+    final_status = loaded.get("status", "") if loaded else (status or "")
+
+    metadata = {
+        "title":           title,
+        "slug":            _slugify(title),
+        "tags":            json.dumps(tags),
+        "source_memories": json.dumps(source_memories),
+        "created_at":      now,
+        "filepath":        str(filepath),
+    }
+    if final_status:
+        metadata["status"] = final_status
 
     notes_collection().upsert(
         ids=[nid],
         documents=[f"{title}\n\n{content}"],
-        metadatas=[{
-            "title":           title,
-            "slug":            _slugify(title),
-            "tags":            json.dumps(tags),
-            "source_memories": json.dumps(source_memories),
-            "created_at":      now,
-            "filepath":        str(filepath),
-        }],
+        metadatas=[metadata],
     )
     return f"Note written: {nid}\nFile: {filepath}"
 
