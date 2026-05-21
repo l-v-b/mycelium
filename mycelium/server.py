@@ -739,6 +739,76 @@ def get_taxonomy() -> str:
 
 
 @mcp.tool()
+def get_room_drawers(wing: str, room: str, limit: int = 500) -> str:
+    """List the drawers in a given wing/room, with content snippets.
+
+    Powers the drawer-level drill-down on the Memory Taxonomy graph.
+    Returns canonical drawer IDs (chunked drawers count once) plus the
+    first ~120 chars of content as a snippet so the UI can label nodes
+    without fetching each drawer separately.
+
+    Args:
+        wing: Wing name to filter by (e.g. "mycelium").
+        room: Room name within the wing (e.g. "decisions").
+        limit: Max drawers to return (default 500). The graph rendering
+            tops out around this size; for huge rooms callers should
+            use the count from get_taxonomy and offer a search fallback.
+
+    Returns:
+        JSON with structure:
+        {
+            "wing": str, "room": str, "total": int (real total, not limited),
+            "returned": int, "truncated": bool,
+            "drawers": [{"id": str, "snippet": str}, ...]
+        }
+    """
+    col = drawers_collection()
+    batch = 500
+    offset = 0
+    seen: set[str] = set()
+    matches: list[dict] = []
+    total_in_room = 0
+
+    # Need to also include documents for the snippets, but chroma returns
+    # everything by ID order — we still iterate the whole collection
+    # because there's no native (wing, room) index. With the new chunked
+    # pagination this is fine even on the 97k vault.
+    while True:
+        page = col.get(
+            include=["metadatas", "documents"],
+            limit=batch,
+            offset=offset,
+        )
+        ids = page.get("ids") or []
+        if not ids:
+            break
+        metas = page.get("metadatas") or []
+        docs  = page.get("documents") or []
+        for did, m, doc in zip(ids, metas, docs):
+            canonical = did.split("__c", 1)[0]
+            if canonical in seen:
+                continue
+            m = m or {}
+            if m.get("wing") != wing or m.get("room") != room:
+                continue
+            seen.add(canonical)
+            total_in_room += 1
+            if len(matches) < limit:
+                snippet = (doc or "").strip().replace("\n", " ")[:120]
+                matches.append({"id": canonical, "snippet": snippet})
+        offset += batch
+
+    return json.dumps({
+        "wing":      wing,
+        "room":      room,
+        "total":     total_in_room,
+        "returned":  len(matches),
+        "truncated": total_in_room > len(matches),
+        "drawers":   matches,
+    })
+
+
+@mcp.tool()
 def status() -> str:
     """Report vault and index counts.
 
