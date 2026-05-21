@@ -4,7 +4,7 @@ FROM python:3.12-slim-bookworm
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl git \
+    && apt-get install -y --no-install-recommends curl git openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
