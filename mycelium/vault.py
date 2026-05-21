@@ -133,8 +133,20 @@ def write_note(
     content: str,
     tags: list[str] | None = None,
     source_memories: list[str] | None = None,
+    status: str | None = None,
 ) -> tuple[str, Path]:
-    """Write a curated note to disk and return (note_id, filepath)."""
+    """Write or upsert a curated note to disk.
+
+    Frontmatter fields:
+        id, title, tags, source_memories, created, updated, status
+
+    `status` is for notes that represent tracked work. Pass None to leave the
+    existing value alone on upsert (or to omit the field on first write).
+    Pass "" to clear. Canonical values: "open" | "in-progress" | "done" |
+    "wont-fix" | "blocked".
+
+    `created` is preserved across upserts (read from existing file if present).
+    """
     tags = tags or []
     source_memories = source_memories or []
 
@@ -145,15 +157,30 @@ def write_note(
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
     filepath = NOTES_DIR / f"{slug}.md"
 
-    post = frontmatter.Post(
-        content,
-        id=nid,
-        title=title,
-        created=now,
-        updated=now,
-        tags=tags,
-        source_memories=source_memories,
-    )
+    created = now
+    existing_status: str | None = None
+    if filepath.exists():
+        try:
+            existing = frontmatter.load(str(filepath))
+            created = existing.get("created", now)
+            existing_status = existing.get("status")
+        except Exception:
+            pass
+
+    final_status = existing_status if status is None else status
+
+    fields: dict[str, Any] = {
+        "id":              nid,
+        "title":           title,
+        "created":         created,
+        "updated":         now,
+        "tags":            tags,
+        "source_memories": source_memories,
+    }
+    if final_status:
+        fields["status"] = final_status
+
+    post = frontmatter.Post(content, **fields)
     filepath.write_text(frontmatter.dumps(post), encoding="utf-8")
     _git_commit(f"note: {title}")
     return nid, filepath
@@ -168,6 +195,8 @@ def load_note(filepath: Path) -> dict[str, Any] | None:
             "tags":            post.get("tags", []),
             "source_memories": post.get("source_memories", []),
             "created_at":      post.get("created", ""),
+            "updated_at":      post.get("updated", ""),
+            "status":          post.get("status", ""),
             "content":         post.content,
             "filepath":        str(filepath),
         }
