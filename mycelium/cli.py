@@ -21,11 +21,11 @@ def _build_hooks_snippet(hooks_dir: Path) -> dict:
             {"type": "command", "command": f"python3 {hooks_dir}/userpromptsubmit.py --harness claude-code || true"},
         ]}],
         "Stop": [{"matcher": "", "hooks": [
-            {"type": "command", "command": f"python3 {hooks_dir}/mempalace_stop.py --harness claude-code || true"},
+            {"type": "command", "command": f"python3 {hooks_dir}/verbatim_stop.py --harness claude-code || true"},
             {"type": "command", "command": f"python3 {hooks_dir}/stop.py --harness claude-code || true"},
         ]}],
         "PreCompact": [{"matcher": "", "hooks": [
-            {"type": "command", "command": f"python3 {hooks_dir}/mempalace_stop.py --harness claude-code || true"},
+            {"type": "command", "command": f"python3 {hooks_dir}/verbatim_stop.py --harness claude-code || true"},
             {"type": "command", "command": f"python3 {hooks_dir}/stop.py --harness claude-code || true"},
         ]}],
     }
@@ -44,7 +44,7 @@ def cmd_install(args: list[str]) -> None:
     hooks_out = DEPLOY_DIR / "hooks"
     hooks_out.mkdir(exist_ok=True)
 
-    for hook in ["userpromptsubmit.py", "stop.py", "mempalace_stop.py"]:
+    for hook in ["userpromptsubmit.py", "stop.py", "verbatim_stop.py"]:
         src = HOOKS_DIR / hook
         dst = hooks_out / hook
         if src.exists():

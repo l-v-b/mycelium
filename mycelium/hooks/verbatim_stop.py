@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Standalone replacement for `python -m mempalace hook run --hook stop`.
+Mycelium verbatim-save checkpoint hook.
 
-Fires every SAVE_INTERVAL human messages and prompts the agent to save
-session content to MemPalace. Independent of the mempalace package so it
-survives `uv tool upgrade mempalace` without being overwritten.
+Fires every SAVE_INTERVAL human messages and prompts the agent to file
+session content verbatim into mycelium (drawers + diary). Pairs with
+stop.py which handles curated note synthesis at a longer cadence.
 
-State: ~/.mycelium/state/{session_id}_mp_last_save
+State: ~/.mycelium/state/{session_id}_verbatim_last_save
 Log:   ~/.mycelium/hook.log
 """
 from __future__ import annotations
@@ -23,11 +23,13 @@ STATE_DIR = Path.home() / ".mycelium" / "state"
 LOG_PATH  = Path.home() / ".mycelium" / "hook.log"
 
 STOP_BLOCK_REASON = (
-    "AUTO-SAVE checkpoint (MemPalace). File this session's content to MemPalace now.\n\n"
+    "AUTO-SAVE checkpoint (mycelium verbatim). File this session's content now.\n\n"
     "Default to MORE rather than less — storage is cheap, lost context is not.\n"
     "When in doubt, file it.\n\n"
-    "1. mempalace_diary_write — AAAK-compressed session summary\n"
-    "2. mempalace_add_drawer — verbatim content: decisions, code, config, prompts, "
+    "Before filing into an unfamiliar wing/room, call mycelium-get-taxonomy "
+    "once to see existing wing/room names — avoid fragmenting with near-duplicates.\n\n"
+    "1. mycelium-diary-write — AAAK-compressed session summary\n"
+    "2. mycelium-file — verbatim content: decisions, code, config, prompts, "
     "key exchanges, anything you would not want to lose. Over-file rather than under-file.\n\n"
     "Do NOT write to Claude Code's native auto-memory (.md files). "
     "Continue conversation after saving."
@@ -37,7 +39,7 @@ STOP_BLOCK_REASON = (
 def _log(msg: str) -> None:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_PATH, "a") as f:
-        f.write(f"[{datetime.now().strftime('%H:%M:%S')}] [mempalace_stop] {msg}\n")
+        f.write(f"[{datetime.now().strftime('%H:%M:%S')}] [verbatim_stop] {msg}\n")
 
 
 def _out(data: dict) -> None:
@@ -97,7 +99,7 @@ def main() -> None:
     exchange_count = _count_human_messages(transcript_path)
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    last_save_file = STATE_DIR / f"{session_id}_mp_last_save"
+    last_save_file = STATE_DIR / f"{session_id}_verbatim_last_save"
     last_save = 0
     if last_save_file.is_file():
         try:
