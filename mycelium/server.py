@@ -442,6 +442,85 @@ def query_notes(query: str, n_results: int = 10) -> str:
     return json.dumps({"notes": notes, "total_indexed": count}, indent=2)
 
 
+@mcp.tool()
+def context_titles(
+    query: str,
+    n_notes: int = 30,
+    n_drawers: int = 30,
+    n_links: int = 10,
+    max_distance: float = 0.75,
+) -> str:
+    """Lightweight context for index-style injection — semantic search
+    returns titles + minimal metadata, NO full note/drawer content.
+
+    Designed for the UserPromptSubmit hook: every prompt gets relevant
+    titles surfaced as an index, agent fetches full content on demand via
+    `context`, `query_notes`, or `get_drawer`. Keeps the per-prompt
+    context-injection cost bounded (~1-3 KB) so the hook can run on every
+    prompt without bloating the conversation history.
+
+    Args:
+        query: Natural-language search query (typically the user's prompt).
+        n_notes: Max note titles to return (default 30).
+        n_drawers: Max drawer titles/snippets (default 30).
+        n_links: Max related links (default 10).
+        max_distance: Cosine distance ceiling for drawer results.
+
+    Returns:
+        JSON: {
+          "query": str,
+          "notes":   [{note_id, title, tags, distance, filepath}],
+          "drawers": [{drawer_id, wing, room, snippet, distance}],
+          "links":   [{link_id, source, target, relation_type, description}]
+        }
+
+        Drawer `snippet` is first 100 chars of content (newlines flattened).
+        Diary drawers (id starts with "diary_") get the date as snippet.
+    """
+    # Notes: reuse query_notes but strip the full content field.
+    notes_result = json.loads(query_notes(query, n_notes))
+    notes_lite = [
+        {
+            "note_id":  n.get("note_id"),
+            "title":    n.get("title"),
+            "tags":     n.get("tags", []),
+            "distance": n.get("distance"),
+            "filepath": n.get("filepath"),
+        }
+        for n in notes_result.get("notes", [])
+    ]
+
+    # Drawers: search but only keep snippet (no full text).
+    drawer_result = search_drawers(
+        query, n_results=n_drawers, max_distance=max_distance,
+    )
+    drawers_lite = []
+    for d in drawer_result.get("results", []):
+        did = d.get("drawer_id", "")
+        if did.startswith("diary_"):
+            # diary_YYYY-MM-DD or diary_wing_DATE — show the date portion
+            snippet = did
+        else:
+            snippet = (d.get("text") or "").strip().replace("\n", " ")[:100]
+        drawers_lite.append({
+            "drawer_id": did,
+            "wing":      d.get("wing"),
+            "room":      d.get("room"),
+            "snippet":   snippet,
+            "distance":  d.get("distance"),
+        })
+
+    # Links: find_links already returns metadata only, no content.
+    links_result = json.loads(find_links(query, n_links))
+
+    return json.dumps({
+        "query":   query,
+        "notes":   notes_lite,
+        "drawers": drawers_lite,
+        "links":   links_result.get("links", []),
+    })
+
+
 # ---------------------------------------------------------------------------
 # Links (typed semantic graph)
 # ---------------------------------------------------------------------------
