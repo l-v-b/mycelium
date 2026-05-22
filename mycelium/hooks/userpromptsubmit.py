@@ -13,9 +13,9 @@ Config: ~/.mycelium/config.json
   "contextforge_url":    "https://nixliam.tail96a95d.ts.net",
   "contextforge_token":  "<jwt without 'Bearer ' prefix>",
   "mempalace_server_id": "e86ab056cea948c3b8ac28e0e1ca2199",
-  "n_notes":             30,
-  "n_drawers":           30,
-  "n_links":             10,
+  "n_notes":             60,
+  "n_drawers":           60,
+  "n_links":             20,
   "max_state_ids":       2000
 }
 
@@ -125,9 +125,9 @@ def _fetch_titles(config: dict, query: str) -> dict:
     base       = config["contextforge_url"].rstrip("/")
     server_id  = config["mempalace_server_id"]
     token      = config["contextforge_token"].removeprefix("Bearer ").strip()
-    n_notes    = int(config.get("n_notes", 30))
-    n_drawers  = int(config.get("n_drawers", 30))
-    n_links    = int(config.get("n_links", 10))
+    n_notes    = int(config.get("n_notes", 60))
+    n_drawers  = int(config.get("n_drawers", 60))
+    n_links    = int(config.get("n_links", 20))
 
     payload = json.dumps({
         "jsonrpc": "2.0",
