@@ -35,7 +35,7 @@ CONFIG_PATH = Path.home() / ".mycelium" / "config.json"
 STATE_DIR   = Path.home() / ".mycelium" / "state"
 LOG_PATH    = Path.home() / ".mycelium" / "hook.log"
 
-TOOL_NAME = "mycelium-mycelium-context"
+TOOL_NAME = "mycelium-context"
 
 
 def _log(msg: str) -> None:
@@ -114,7 +114,7 @@ def _fetch_context(config: dict, query: str) -> dict:
             "arguments": {
                 "query":      query[:250],
                 "n_notes":    n_notes,
-                "n_memories": n_memories,
+                "n_drawers":  n_memories,
                 "n_links":    n_links,
             },
         },
