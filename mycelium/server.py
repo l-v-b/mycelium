@@ -445,9 +445,9 @@ def query_notes(query: str, n_results: int = 10) -> str:
 @mcp.tool()
 def context_titles(
     query: str,
-    n_notes: int = 30,
-    n_drawers: int = 30,
-    n_links: int = 10,
+    n_notes: int = 60,
+    n_drawers: int = 60,
+    n_links: int = 20,
     max_distance: float = 0.75,
 ) -> str:
     """Lightweight context for index-style injection — semantic search
@@ -461,9 +461,9 @@ def context_titles(
 
     Args:
         query: Natural-language search query (typically the user's prompt).
-        n_notes: Max note titles to return (default 30).
-        n_drawers: Max drawer titles/snippets (default 30).
-        n_links: Max related links (default 10).
+        n_notes: Max note titles to return (default 60).
+        n_drawers: Max drawer titles/snippets (default 60).
+        n_links: Max related links (default 20).
         max_distance: Cosine distance ceiling for drawer results.
 
     Returns:
