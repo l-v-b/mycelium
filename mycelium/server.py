@@ -474,8 +474,8 @@ def context_titles(
           "links":   [{link_id, source, target, relation_type, description}]
         }
 
-        Drawer `snippet` is first 100 chars of content (newlines flattened).
-        Diary drawers (id starts with "diary_") get the date as snippet.
+        Drawer `snippet` is first 100 chars of content (newlines flattened),
+        with the drawer id used as a fallback when the body is empty.
     """
     # Notes: reuse query_notes but strip the full content field.
     notes_result = json.loads(query_notes(query, n_notes))
@@ -497,11 +497,10 @@ def context_titles(
     drawers_lite = []
     for d in drawer_result.get("results", []):
         did = d.get("drawer_id", "")
-        if did.startswith("diary_"):
-            # diary_YYYY-MM-DD or diary_wing_DATE — show the date portion
+        snippet = (d.get("text") or "").strip().replace("\n", " ")[:100]
+        if not snippet:
+            # Fall back to the drawer id when body is empty.
             snippet = did
-        else:
-            snippet = (d.get("text") or "").strip().replace("\n", " ")[:100]
         drawers_lite.append({
             "drawer_id": did,
             "wing":      d.get("wing"),
