@@ -17,7 +17,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import frontmatter
 from fastmcp import FastMCP
@@ -86,6 +86,55 @@ mcp = FastMCP(
 # Context (primary entry point)
 # ---------------------------------------------------------------------------
 
+# Per-tool-result size budget. Claude Code's hard cap sits around 50 KB; this
+# threshold leaves ~10 KB margin for JSON formatting / response envelope so
+# even a tight-to-the-limit auto-downgrade still lands safely.
+_CONTEXT_SIZE_LIMIT = 40_000
+
+# Per-item content cap in snippet mode.
+_SNIPPET_MAX_CHARS = 500
+
+# Fields preserved in titles mode (drops all bulk content).
+_TITLES_KEEP_FIELDS = frozenset({
+    "note_id", "drawer_id", "link_id", "from_entity",
+    "title", "wing", "room",
+    "tags", "filepath", "source_file",
+    "source", "target", "relation_type",
+    "distance", "similarity", "effective_distance",
+})
+
+
+def _snippet_item(item: dict, max_chars: int = _SNIPPET_MAX_CHARS) -> dict:
+    """Truncate long string fields to max_chars; keep IDs and metadata intact."""
+    out: dict = {}
+    for k, v in item.items():
+        if isinstance(v, str) and len(v) > max_chars:
+            out[k] = v[:max_chars] + "…[truncated]"
+        else:
+            out[k] = v
+    return out
+
+
+def _titles_item(item: dict) -> dict:
+    """Drop bulk content; keep only identity, location, and ranking fields."""
+    return {k: v for k, v in item.items() if k in _TITLES_KEEP_FIELDS}
+
+
+def _degrade_result(result: dict, level: Literal["snippet", "titles"]) -> dict:
+    """Apply the snippet- or titles-level transformation to a context() result.
+
+    Mutates only the list values under known keys; preserves other top-level keys.
+    Returns a new dict (shallow copy at top, transformed lists).
+    """
+    transform = _snippet_item if level == "snippet" else _titles_item
+    out = dict(result)
+    for key in ("notes", "memories", "links", "links_from_results"):
+        if isinstance(out.get(key), list):
+            out[key] = [transform(item) for item in out[key]]
+    out["_degraded_to"] = level
+    return out
+
+
 @mcp.tool()
 def context(
     query: str,
@@ -94,12 +143,20 @@ def context(
     n_links: int = 10,
     max_distance: float = 0.75,
     expand_links: bool = True,
+    mode: Literal["auto", "full", "snippet", "titles"] = "auto",
 ) -> str:
     """Retrieve combined context: curated notes + verbatim drawers + related links.
 
     The primary tool for task start. Returns all three layers in one call, plus
     optionally the graph neighborhood — outgoing links from any returned entity
     so the agent sees connected content without a second tool call.
+
+    Output size is automatically capped: in `auto` mode (default), the tool
+    measures the full payload and downgrades to snippets (~500 chars per item)
+    or titles-only if the response would exceed Claude Code's per-tool-result
+    limit. The response includes `_degraded_to` ("snippet" or "titles") when
+    a downgrade was applied so the agent can re-fetch specific items in full
+    with get_drawer() or query_notes() if needed.
 
     Args:
         query: What you are looking for.
@@ -110,10 +167,16 @@ def context(
         expand_links: If True (default), also include outgoing links from each
             returned note/drawer under "links_from_results". Provides the
             graph neighborhood of the matched entities.
+        mode: Output verbosity. "auto" (default) returns full content but
+            downgrades to snippet then titles if the response would exceed
+            the ~40 KB tool-output budget. "full" always returns full content
+            (use with smaller n_*). "snippet" forces snippet truncation.
+            "titles" returns only identity/ranking fields, no content.
 
     Returns:
         JSON with notes, memories (drawers), links (semantic on descriptions),
         and (if expand_links) links_from_results (graph edges from matches).
+        Includes `_degraded_to` when auto-degradation was applied.
     """
     notes_result  = json.loads(query_notes(query, n_notes))
     notes         = notes_result.get("notes", [])
@@ -161,6 +224,23 @@ def context(
 
     if not links and not result.get("links_from_results"):
         result["links_hint"] = "No links yet — use add_link to start building the graph."
+
+    # Apply requested verbosity / auto-degradation.
+    if mode == "snippet":
+        result = _degrade_result(result, "snippet")
+    elif mode == "titles":
+        result = _degrade_result(result, "titles")
+    elif mode == "auto":
+        payload = json.dumps(result, indent=2)
+        if len(payload) >= _CONTEXT_SIZE_LIMIT:
+            snippet = _degrade_result(result, "snippet")
+            payload = json.dumps(snippet, indent=2)
+            if len(payload) >= _CONTEXT_SIZE_LIMIT:
+                result = _degrade_result(result, "titles")
+            else:
+                result = snippet
+    # mode == "full" → no transformation
+
     return json.dumps(result, indent=2)
 
 
@@ -370,10 +450,34 @@ def write_note(
             on upsert to preserve the existing status. Pass "" to clear.
 
     Returns:
-        Confirmation with note_id and file path.
+        Confirmation with note_id and file path. Includes a Warning line if a
+        semantically similar note with a different title already exists (the
+        caller may want to update that note instead of creating a parallel one,
+        since write_note upserts by title).
     """
     tags = tags or []
     source_memories = source_memories or []
+
+    # Soft duplicate warning: look for a semantically-similar existing note
+    # with a DIFFERENT title before writing. Same-title cases are upserts and
+    # don't warrant a warning. Best-effort — never blocks the write.
+    duplicate_warning: dict | None = None
+    try:
+        existing_query = json.loads(query_notes(title, n_results=1))
+        candidates = existing_query.get("notes", [])
+        if candidates:
+            top = candidates[0]
+            top_title = (top.get("title") or "")
+            top_distance = top.get("distance", 1.0)
+            if top_distance < 0.25 and top_title.strip().lower() != title.strip().lower():
+                duplicate_warning = {
+                    "message":          "Similar existing note found — consider updating that one instead (write_note upserts by title).",
+                    "existing_title":   top_title,
+                    "existing_note_id": top.get("note_id"),
+                    "distance":         top_distance,
+                }
+    except Exception:
+        pass  # never let the lookup block a real write
 
     nid, filepath = _vault_write_note(title, content, tags, source_memories, status)
     now = datetime.now(timezone.utc).isoformat()
@@ -397,7 +501,10 @@ def write_note(
         documents=[f"{title}\n\n{content}"],
         metadatas=[metadata],
     )
-    return f"Note written: {nid}\nFile: {filepath}"
+    confirmation = f"Note written: {nid}\nFile: {filepath}"
+    if duplicate_warning:
+        confirmation += f"\nWarning: {json.dumps(duplicate_warning, indent=2)}"
+    return confirmation
 
 
 @mcp.tool()
