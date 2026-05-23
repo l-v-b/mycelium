@@ -469,7 +469,10 @@ def write_note(
             top = candidates[0]
             top_title = (top.get("title") or "")
             top_distance = top.get("distance", 1.0)
-            if top_distance < 0.25 and top_title.strip().lower() != title.strip().lower():
+            # Threshold 0.5 reflects MiniLM cosine distances for this corpus:
+            # near-identical titles register ~0.4–0.5; tangentially related stuff
+            # sits at 0.6+. 0.5 catches the obvious dups without false positives.
+            if top_distance < 0.5 and top_title.strip().lower() != title.strip().lower():
                 duplicate_warning = {
                     "message":          "Similar existing note found — consider updating that one instead (write_note upserts by title).",
                     "existing_title":   top_title,
