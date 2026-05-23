@@ -20,7 +20,17 @@ Config: ~/.mycelium/config.json
 }
 
 State: ~/.mycelium/state/{session_id}_surfaced.json
-  { "note_ids": [...], "drawer_ids": [...], "link_ids": [...] }
+  {
+    "note_ids":      [...],
+    "drawer_ids":    [...],
+    "link_ids":      [...],
+    "recent_yields": [int, int, ...],  # rolling window of last N injection counts
+  }
+
+Adaptive sizing: when the rolling-mean of recent yields drops below a
+threshold (because dedup is starving the agent of net-new context), the
+NEXT call widens its search radius (2× fetch counts + 0.10 max_distance)
+to find relevant items beyond the current top-N cutoff.
 """
 from __future__ import annotations
 
@@ -38,6 +48,17 @@ STATE_DIR   = Path.home() / ".mycelium" / "state"
 LOG_PATH    = Path.home() / ".mycelium" / "hook.log"
 
 TOOL_NAME = "mycelium-context-titles"
+
+# Adaptive sizing tunables — widen the next fetch when the rolling-mean of
+# recent yields drops below ADAPTIVE_TRIGGER_MEAN over a window of
+# ADAPTIVE_WINDOW recent calls. Widen multiplies fetch counts by
+# ADAPTIVE_WIDEN_FACTOR and bumps max_distance by ADAPTIVE_WIDEN_DISTANCE.
+# Mean recovery naturally resets the behaviour — no explicit reset needed.
+ADAPTIVE_WINDOW          = 5
+ADAPTIVE_TRIGGER_MEAN    = 2.0
+ADAPTIVE_WIDEN_FACTOR    = 2
+ADAPTIVE_WIDEN_DISTANCE  = 0.10
+DEFAULT_MAX_DISTANCE     = 0.75
 
 
 def _log(msg: str) -> None:
@@ -71,18 +92,19 @@ def _state_path(session_id: str) -> Path:
 def _load_surfaced(session_id: str) -> dict:
     p = _state_path(session_id)
     if not p.exists():
-        return {"note_ids": [], "drawer_ids": [], "link_ids": []}
+        return {"note_ids": [], "drawer_ids": [], "link_ids": [], "recent_yields": []}
     try:
         with open(p) as f:
             d = json.load(f)
         # Normalise — accept legacy formats / partial state files
         return {
-            "note_ids":   list(d.get("note_ids", [])),
-            "drawer_ids": list(d.get("drawer_ids", [])),
-            "link_ids":   list(d.get("link_ids", [])),
+            "note_ids":      list(d.get("note_ids", [])),
+            "drawer_ids":    list(d.get("drawer_ids", [])),
+            "link_ids":      list(d.get("link_ids", [])),
+            "recent_yields": list(d.get("recent_yields", [])),
         }
     except (json.JSONDecodeError, OSError):
-        return {"note_ids": [], "drawer_ids": [], "link_ids": []}
+        return {"note_ids": [], "drawer_ids": [], "link_ids": [], "recent_yields": []}
 
 
 def _save_surfaced(session_id: str, state: dict, max_ids: int) -> None:
@@ -90,14 +112,48 @@ def _save_surfaced(session_id: str, state: dict, max_ids: int) -> None:
     # Cap each list to prevent runaway state file growth on long sessions.
     # FIFO trim — oldest IDs drop out first, so very-stale items could
     # re-surface after the cap is hit. Acceptable for personal use.
-    trimmed = {
-        k: list(v[-max_ids:]) for k, v in state.items()
-    }
+    trimmed: dict = {}
+    for k, v in state.items():
+        if k == "recent_yields":
+            # Rolling window of last N injection counts (small, bounded).
+            trimmed[k] = list(v[-ADAPTIVE_WINDOW:])
+        else:
+            trimmed[k] = list(v[-max_ids:])
     try:
         with open(_state_path(session_id), "w") as f:
             json.dump(trimmed, f)
     except OSError as e:
         _log(f"Failed to write state: {e}")
+
+
+def _adaptive_params(
+    config: dict, recent_yields: list[int]
+) -> tuple[int, int, int, float, bool]:
+    """Return (n_notes, n_drawers, n_links, max_distance, widened).
+
+    Widens the next fetch when the rolling-mean of `recent_yields` over the
+    last ADAPTIVE_WINDOW calls drops below ADAPTIVE_TRIGGER_MEAN — typically
+    because dedup is starving the agent of net-new context. Multiplies fetch
+    counts and bumps max_distance for the next call only; the wider-yield
+    feedback naturally raises the rolling mean and brings the next call back
+    to baseline.
+    """
+    n_notes   = int(config.get("n_notes", 60))
+    n_drawers = int(config.get("n_drawers", 60))
+    n_links   = int(config.get("n_links", 20))
+    max_dist  = float(config.get("max_distance", DEFAULT_MAX_DISTANCE))
+
+    if len(recent_yields) >= ADAPTIVE_WINDOW:
+        mean_yield = sum(recent_yields[-ADAPTIVE_WINDOW:]) / ADAPTIVE_WINDOW
+        if mean_yield < ADAPTIVE_TRIGGER_MEAN:
+            return (
+                n_notes   * ADAPTIVE_WIDEN_FACTOR,
+                n_drawers * ADAPTIVE_WIDEN_FACTOR,
+                n_links   * ADAPTIVE_WIDEN_FACTOR,
+                min(max_dist + ADAPTIVE_WIDEN_DISTANCE, 0.99),
+                True,
+            )
+    return n_notes, n_drawers, n_links, max_dist, False
 
 
 def _cleanup_state(max_age_days: int = 7) -> None:
@@ -121,13 +177,17 @@ GREETING_RE = re.compile(
 GREETING_FALLBACK_QUERY = "recent projects session continuity current work"
 
 
-def _fetch_titles(config: dict, query: str) -> dict:
+def _fetch_titles(
+    config: dict,
+    query: str,
+    n_notes: int,
+    n_drawers: int,
+    n_links: int,
+    max_distance: float,
+) -> dict:
     base       = config["contextforge_url"].rstrip("/")
     server_id  = config["mempalace_server_id"]
     token      = config["contextforge_token"].removeprefix("Bearer ").strip()
-    n_notes    = int(config.get("n_notes", 60))
-    n_drawers  = int(config.get("n_drawers", 60))
-    n_links    = int(config.get("n_links", 20))
 
     payload = json.dumps({
         "jsonrpc": "2.0",
@@ -135,10 +195,11 @@ def _fetch_titles(config: dict, query: str) -> dict:
         "params": {
             "name": TOOL_NAME,
             "arguments": {
-                "query":     query[:250],
-                "n_notes":   n_notes,
-                "n_drawers": n_drawers,
-                "n_links":   n_links,
+                "query":         query[:250],
+                "n_notes":       n_notes,
+                "n_drawers":     n_drawers,
+                "n_links":       n_links,
+                "max_distance":  max_distance,
             },
         },
         "id": 1,
@@ -267,15 +328,34 @@ def main() -> None:
         return
 
     try:
-        titles = _fetch_titles(config, effective_query)
         surfaced = _load_surfaced(session_id)
+        n_notes_arg, n_drawers_arg, n_links_arg, max_dist_arg, widened = _adaptive_params(
+            config, surfaced.get("recent_yields", [])
+        )
+
+        titles = _fetch_titles(
+            config, effective_query,
+            n_notes_arg, n_drawers_arg, n_links_arg, max_dist_arg,
+        )
         formatted, just_surfaced = _dedup_and_format(titles, surfaced)
 
-        # Always update state with what we surfaced — even when injection
-        # is empty, the act of querying counts (the IDs were already
-        # surfaced to the agent at some prior point).
+        # Record this call's yield (count of net-new items across all sources)
+        # in the rolling window so the next call's adaptive params know whether
+        # to widen further or settle.
+        n_notes   = len(just_surfaced["note_ids"])
+        n_drawers = len(just_surfaced["drawer_ids"])
+        n_links   = len(just_surfaced["link_ids"])
+        yield_count = n_notes + n_drawers + n_links
+        new_recent = list(surfaced.get("recent_yields", [])) + [yield_count]
+
+        # Always update state with what we surfaced + the new yield reading —
+        # even when injection is empty, the act of querying counts (the IDs
+        # were already surfaced to the agent at some prior point).
         merged = {
-            k: surfaced[k] + just_surfaced[k] for k in surfaced
+            "note_ids":      surfaced["note_ids"]   + just_surfaced["note_ids"],
+            "drawer_ids":    surfaced["drawer_ids"] + just_surfaced["drawer_ids"],
+            "link_ids":      surfaced["link_ids"]   + just_surfaced["link_ids"],
+            "recent_yields": new_recent,
         }
         max_ids = int(config.get("max_state_ids", 2000))
         _save_surfaced(session_id, merged, max_ids)
@@ -283,18 +363,16 @@ def main() -> None:
         if not formatted:
             # Quiet "all seen" case — log but don't inject. Most common
             # state for prompts that continue an existing topic.
-            n_seen = sum(len(v) for v in surfaced.values())
-            _log(f"[{session_id}] all relevant titles already surfaced (state has {n_seen} ids)")
+            n_seen = sum(len(surfaced[k]) for k in ("note_ids", "drawer_ids", "link_ids"))
+            _log(f"[{session_id}] all relevant titles already surfaced (state has {n_seen} ids){' [widened]' if widened else ''}")
             _out({})
             return
 
-        n_notes   = len(just_surfaced["note_ids"])
-        n_drawers = len(just_surfaced["drawer_ids"])
-        n_links   = len(just_surfaced["link_ids"])
         _log(
             f"[{session_id}] {prompt[:60]!r} -> "
             f"+{n_notes}n / +{n_drawers}d / +{n_links}l "
             f"({len(formatted)} chars)"
+            f"{' [widened: ' + str(n_notes_arg) + '/' + str(n_drawers_arg) + '/' + str(n_links_arg) + ' @' + str(round(max_dist_arg, 2)) + ']' if widened else ''}"
         )
         _out({
             "hookSpecificOutput": {
