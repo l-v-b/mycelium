@@ -23,7 +23,13 @@ import frontmatter
 from fastmcp import FastMCP
 
 from mycelium.chroma import drawers_collection, links_collection, notes_collection
-from mycelium.config import NOTES_DIR, VAULT_DIR
+from mycelium.config import (
+    NOTES_DIR,
+    SOURCE_BIAS_DRAWER,
+    SOURCE_BIAS_LINK,
+    SOURCE_BIAS_NOTE,
+    VAULT_DIR,
+)
 from mycelium.search import search_drawers
 from mycelium.vault import (
     chunk_content as _chunk_content,
@@ -100,6 +106,7 @@ _TITLES_KEEP_FIELDS = frozenset({
     "title", "wing", "room",
     "tags", "filepath", "source_file",
     "source", "target", "relation_type",
+    "source_type",  # top_results entry: "note" | "drawer" | "link"
     "distance", "similarity", "effective_distance",
 })
 
@@ -176,7 +183,10 @@ def context(
     Returns:
         JSON with notes, memories (drawers), links (semantic on descriptions),
         and (if expand_links) links_from_results (graph edges from matches).
-        Includes `_degraded_to` when auto-degradation was applied.
+        Also includes `top_results` — a lightweight merged ranking across all
+        sources with per-source bias applied (notes outrank drawers outrank
+        links at similar raw distance). Includes `_degraded_to` when
+        auto-degradation was applied to the bulk per-source lists.
     """
     notes_result  = json.loads(query_notes(query, n_notes))
     notes         = notes_result.get("notes", [])
@@ -224,6 +234,49 @@ def context(
 
     if not links and not result.get("links_from_results"):
         result["links_hint"] = "No links yet — use add_link to start building the graph."
+
+    # Build a unified top_results ranking across all sources so the agent
+    # sees "what's most relevant overall" without merging the lists itself.
+    # Bias each source by SOURCE_BIAS_* (lower = higher priority): notes
+    # outrank drawers outrank links at similar raw distance. Entries are
+    # lightweight — id, label, source type, and distances only — so they
+    # don't bloat the response. Agents follow up via get_drawer() or
+    # query_notes() if they need full content for a specific entry.
+    merged_candidates: list[dict] = []
+    for n in notes:
+        if "distance" in n:
+            merged_candidates.append({
+                "source_type":         "note",
+                "note_id":             n.get("note_id"),
+                "title":               n.get("title"),
+                "distance":            n["distance"],
+                "effective_distance":  round(n["distance"] + SOURCE_BIAS_NOTE, 4),
+            })
+    for d in drawers:
+        if "distance" in d:
+            merged_candidates.append({
+                "source_type":         "drawer",
+                "drawer_id":           d.get("drawer_id"),
+                "wing":                d.get("wing"),
+                "room":                d.get("room"),
+                "distance":            d["distance"],
+                "effective_distance":  round(d["distance"] + SOURCE_BIAS_DRAWER, 4),
+            })
+    for l in links:
+        if "distance" in l:
+            src_label = (l.get("source") or {}).get("label", "?")
+            tgt_label = (l.get("target") or {}).get("label", "?")
+            rel       = l.get("relation_type", "?")
+            merged_candidates.append({
+                "source_type":         "link",
+                "link_id":             l.get("link_id"),
+                "title":               f"{src_label} --[{rel}]--> {tgt_label}",
+                "distance":            l["distance"],
+                "effective_distance":  round(l["distance"] + SOURCE_BIAS_LINK, 4),
+            })
+    if merged_candidates:
+        merged_candidates.sort(key=lambda x: x["effective_distance"])
+        result["top_results"] = merged_candidates[:10]
 
     # Apply requested verbosity / auto-degradation.
     if mode == "snippet":

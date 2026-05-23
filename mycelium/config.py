@@ -23,3 +23,13 @@ DEPLOYMENT_MODE = os.environ.get("MYCELIUM_MODE", "personal")  # "personal" | "t
 # Git auto-commit. Set to empty string to disable.
 VAULT_GIT_AUTHOR_NAME  = os.environ.get("MYCELIUM_GIT_AUTHOR", "mycelium")
 VAULT_GIT_AUTHOR_EMAIL = os.environ.get("MYCELIUM_GIT_EMAIL", "mycelium@localhost")
+
+# Per-source bias applied to raw cosine distance when ranking across sources.
+# LOWER bias = HIGHER priority in the merged top_results ranking.
+#   Notes are curated synthesis (highest signal).
+#   Drawers are raw verbatim (high-volume, lower per-item signal).
+#   Links are connectors (useful but rarely standalone answers).
+# Tune empirically without redeploy via env vars.
+SOURCE_BIAS_NOTE   = float(os.environ.get("MYCELIUM_BIAS_NOTE",   "-0.05"))
+SOURCE_BIAS_DRAWER = float(os.environ.get("MYCELIUM_BIAS_DRAWER",  "0.00"))
+SOURCE_BIAS_LINK   = float(os.environ.get("MYCELIUM_BIAS_LINK",    "0.10"))
