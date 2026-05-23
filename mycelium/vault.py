@@ -795,7 +795,7 @@ def reindex_notes() -> tuple[int, int]:
             continue
         batch_ids.append(n["note_id"])
         batch_docs.append(f"{n['title']}\n\n{n['content']}")
-        batch_metas.append({
+        meta = {
             "type":            "note",
             "title":           n["title"],
             "slug":            slugify(n["title"]),
@@ -803,7 +803,13 @@ def reindex_notes() -> tuple[int, int]:
             "source_memories": json.dumps(n["source_memories"]),
             "created_at":      n["created_at"],
             "filepath":        n["filepath"],
-        })
+        }
+        # Propagate the `status` field from frontmatter so `where={"status":...}`
+        # filter queries work after a disk-side backfill. Skip when unset so we
+        # don't index empty strings as a real status value.
+        if n.get("status"):
+            meta["status"] = n["status"]
+        batch_metas.append(meta)
         if len(batch_ids) >= REINDEX_BATCH_SIZE:
             _flush()
 
