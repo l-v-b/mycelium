@@ -533,22 +533,34 @@ def cmd_skills_sync(args: list[str]) -> None:
     skills directory is in `~/.claude/settings.json` skillsDirectories.
     """
     cfg = _read_config()
-    repo = _parse_named_flag(args, "repo") or cfg.get("personal_skills_repo", "")
+    explicit_repo = _parse_named_flag(args, "repo")
+    repo = explicit_repo or cfg.get("personal_skills_repo", "")
     if not repo:
         print("ERROR: No personal-skills repo configured.", file=sys.stderr)
         print("       Run `mycelium install --skills-repo URL` to persist a URL", file=sys.stderr)
         print("       or pass `--repo URL` for one-shot sync.", file=sys.stderr)
         sys.exit(1)
 
+    # Print the URL + provenance BEFORE invoking git so it lands above the
+    # subprocess's own "Cloning into ..." / "From <remote>" output. Otherwise
+    # the order is confusing — git's print flushes first and the package
+    # looks like it magically knew the URL.
+    source = "--repo flag" if explicit_repo else f"personal_skills_repo in {CONFIG_PATH}"
+    print(f"Repo URL (from {source}): {repo}")
+    print(f"Target:                    {DEPLOYED_PERSONAL_SKILLS_DIR}")
+    sys.stdout.flush()
+
     DEPLOYED_PERSONAL_SKILLS_DIR.parent.mkdir(parents=True, exist_ok=True)
     if (DEPLOYED_PERSONAL_SKILLS_DIR / ".git").is_dir():
-        print(f"Pulling latest into {DEPLOYED_PERSONAL_SKILLS_DIR}")
+        print("Action: git pull --ff-only")
+        sys.stdout.flush()
         rc = subprocess.run(
             ["git", "-C", str(DEPLOYED_PERSONAL_SKILLS_DIR), "pull", "--ff-only"],
             check=False,
         ).returncode
     else:
-        print(f"Cloning {repo} → {DEPLOYED_PERSONAL_SKILLS_DIR}")
+        print("Action: git clone")
+        sys.stdout.flush()
         rc = subprocess.run(
             ["git", "clone", repo, str(DEPLOYED_PERSONAL_SKILLS_DIR)],
             check=False,
@@ -656,6 +668,37 @@ def cmd_init(args: list[str]) -> None:
     print("  python -m mycelium                       # start the MCP server (if running locally)")
 
 
+def cmd_serve(args: list[str]) -> None:
+    """Start the mycelium FastMCP server.
+
+    Usage:
+      mycelium serve [--host HOST] [--port PORT] [--transport TRANSPORT]
+
+    Alias for `python -m mycelium`. Defaults come from `mycelium.config`
+    (overridable via `MYCELIUM_HOST` / `MYCELIUM_PORT` env vars). Transport
+    defaults to `sse`; pass `--transport streamable-http` to switch.
+
+    The server reads its vault from `$MYCELIUM_DATA_DIR/vault/` and its
+    ChromaDB from `$MYCELIUM_DATA_DIR/chroma/`. Run `mycelium init` first
+    if you haven't set those up.
+    """
+    from mycelium.config import HOST as DEFAULT_HOST, PORT as DEFAULT_PORT
+    from mycelium.server import mcp
+
+    host = _parse_named_flag(args, "host") or DEFAULT_HOST
+    port_str = _parse_named_flag(args, "port") or str(DEFAULT_PORT)
+    transport = _parse_named_flag(args, "transport") or "sse"
+
+    try:
+        port = int(port_str)
+    except ValueError:
+        print(f"ERROR: --port must be an integer, got {port_str!r}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Starting mycelium FastMCP server on {host}:{port} (transport={transport})")
+    mcp.run(transport=transport, host=host, port=port)
+
+
 def cmd_verify(args: list[str]) -> None:
     """Quick health check: imports, vault dirs, index counts."""
     from mycelium.config import VAULT_DIR, CHROMA_DIR
@@ -722,9 +765,18 @@ def main() -> None:
         print("                              --dry-run    (print the would-be config, no writes)")
         print("  skills sync          Clone/pull personal-skills repo to ~/.mycelium/skills/personal/")
         print("                       Flags: --repo URL (one-shot override)")
+        print("  serve                Start the mycelium FastMCP server (alias for `python -m mycelium`)")
+        print("                       Flags: --host HOST, --port PORT, --transport sse|streamable-http")
         print("  verify               Health check: imports, vault, index counts")
         print("  reindex              Sync ChromaDB (notes, drawers, links) with vault/ markdown files")
         print("  regenerate-closets   Rebuild closet topical-cluster index from current drawers")
+        print()
+        print("Backups: `install` writes <file>.mycelium-bak before mutating any config file.")
+        print("To roll back the most recent install:")
+        print("  cp ~/.claude/settings.json.mycelium-bak  ~/.claude/settings.json")
+        print("  cp ~/.claude.json.mycelium-bak           ~/.claude.json")
+        print("  cp ~/.cursor/hooks.json.mycelium-bak     ~/.cursor/hooks.json")
+        print("Only files that were actually touched will have a .mycelium-bak.")
         return
 
     cmd, rest = args[0], args[1:]
@@ -732,6 +784,7 @@ def main() -> None:
         "init":                cmd_init,
         "install":             cmd_install,
         "skills":              cmd_skills,
+        "serve":               cmd_serve,
         "verify":              cmd_verify,
         "reindex":             cmd_reindex,
         "regenerate-closets":  cmd_regenerate_closets,
