@@ -10,7 +10,7 @@ The package combines the curated-knowledge layer originally called *mycelium* an
 
 ## Status
 
-Production-deployed on the author's personal stack since 2026-05. Phase 3 (Rain team k8s deployment) is in design.
+Production-deployed on the author's personal stack since 2026-05.
 
 ## Quick start
 
@@ -34,6 +34,10 @@ Three layers, each authored once and reaching every connected client without man
 The first three are *server-authored* and shipped with the package — update the package, every client picks up the new guidance automatically.
 
 When running behind a gateway like [contextforge](https://github.com/IBM/mcp-context-forge), the gateway must forward the upstream `instructions` field. The official IBM/mcp-context-forge upstream silently drops it as of `c3251f616`; the [l-v-b fork](https://github.com/l-v-b/mcp-context-forge) carries the [forwarding patch](https://github.com/l-v-b/mcp-context-forge/pull/1).
+
+## Credits
+
+The verbatim-capture / drawer storage / hybrid BM25+vector search at the heart of mycelium-palace originated in [mempalace](https://pypi.org/project/mempalace/) by [milla-jovovich](https://github.com/MemPalace). mycelium-palace folds that design into a single-process server alongside the curated-note + typed-link layers; mempalace remains the authoritative source for the verbatim-only use case.
 
 ## License
 
