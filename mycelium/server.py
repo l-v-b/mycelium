@@ -1173,37 +1173,42 @@ def _format_links(chroma_result: dict) -> list[dict]:
 # resources capability is still advertised by FastMCP and skills surface
 # automatically the moment any are added to the package.
 
-_SKILLS_PACKAGE_DIR = Path(__file__).parent / "skills"
+_SKILLS_PACKAGE_DIR  = Path(__file__).parent / "skills"
+_SKILLS_PERSONAL_DIR = Path.home() / ".mycelium" / "skills" / "personal"
 
 
-def _register_one_skill(slug: str) -> None:
-    """Register a single in-package skill as a static MCP resource.
+def _register_skill_resource(slug: str, src_dir: Path, uri_scheme: str, label_prefix: str) -> None:
+    """Register a single skill as a static MCP resource.
 
-    Factored out so each registration gets its own enclosing scope —
-    avoids the loop-variable closure capture pitfall, and the reader
-    function takes no parameters so FastMCP treats the URI as static
-    (not a template, which would require a `{param}` in the URI).
+    Factored to get its own enclosing scope per call — avoids the
+    loop-variable closure capture pitfall, and the inner reader takes
+    no parameters so FastMCP treats the URI as static (not a template,
+    which would require a `{param}` in the URI).
     """
 
     @mcp.resource(
-        f"mycelium-skill://{slug}",
+        f"{uri_scheme}://{slug}",
         name=slug,
-        description=f"Mycelium skill: {slug}",
+        description=f"{label_prefix}: {slug}",
         mime_type="text/markdown",
     )
     def _read_skill() -> str:
-        return (_SKILLS_PACKAGE_DIR / slug / "SKILL.md").read_text()
+        return (src_dir / slug / "SKILL.md").read_text()
 
 
-def _register_in_package_skills() -> None:
-    if not _SKILLS_PACKAGE_DIR.is_dir():
+def _register_skills_from_dir(src_dir: Path, uri_scheme: str, label_prefix: str) -> None:
+    if not src_dir.is_dir():
         return
-    for entry in sorted(_SKILLS_PACKAGE_DIR.iterdir()):
-        if entry.name == "README.md" or not entry.is_dir():
+    for entry in sorted(src_dir.iterdir()):
+        if entry.name == "README.md" or not entry.is_dir() or entry.name == ".git":
             continue
         if not (entry / "SKILL.md").exists():
             continue
-        _register_one_skill(entry.name)
+        _register_skill_resource(entry.name, src_dir, uri_scheme, label_prefix)
 
 
-_register_in_package_skills()
+# In-package skills (ship with the wheel) → mycelium-skill://<slug>
+_register_skills_from_dir(_SKILLS_PACKAGE_DIR, "mycelium-skill", "Mycelium skill")
+
+# Personal-skills repo (synced via `mycelium skills sync`) → personal-skill://<slug>
+_register_skills_from_dir(_SKILLS_PERSONAL_DIR, "personal-skill", "Personal skill")
