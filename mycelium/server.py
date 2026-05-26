@@ -1158,3 +1158,52 @@ def _format_links(chroma_result: dict) -> list[dict]:
             "ended_at":      meta.get("ended_at", "") or None,
         })
     return links
+
+
+# ---------------------------------------------------------------------------
+# Skills as MCP resources
+# ---------------------------------------------------------------------------
+# Each top-level subdirectory of `mycelium/skills/` is published as a static
+# MCP resource at `mycelium-skill://<slug>`. The body of the resource is the
+# skill's SKILL.md contents. ContextForge (and any other gateway that
+# aggregates this server) forwards these resources to downstream clients via
+# `resources/list` and `resources/read` by default.
+#
+# When the bucket is empty (default state) this loop registers nothing — the
+# resources capability is still advertised by FastMCP and skills surface
+# automatically the moment any are added to the package.
+
+_SKILLS_PACKAGE_DIR = Path(__file__).parent / "skills"
+
+
+def _register_one_skill(slug: str) -> None:
+    """Register a single in-package skill as a static MCP resource.
+
+    Factored out so each registration gets its own enclosing scope —
+    avoids the loop-variable closure capture pitfall, and the reader
+    function takes no parameters so FastMCP treats the URI as static
+    (not a template, which would require a `{param}` in the URI).
+    """
+
+    @mcp.resource(
+        f"mycelium-skill://{slug}",
+        name=slug,
+        description=f"Mycelium skill: {slug}",
+        mime_type="text/markdown",
+    )
+    def _read_skill() -> str:
+        return (_SKILLS_PACKAGE_DIR / slug / "SKILL.md").read_text()
+
+
+def _register_in_package_skills() -> None:
+    if not _SKILLS_PACKAGE_DIR.is_dir():
+        return
+    for entry in sorted(_SKILLS_PACKAGE_DIR.iterdir()):
+        if entry.name == "README.md" or not entry.is_dir():
+            continue
+        if not (entry / "SKILL.md").exists():
+            continue
+        _register_one_skill(entry.name)
+
+
+_register_in_package_skills()
