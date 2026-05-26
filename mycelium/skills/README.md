@@ -28,8 +28,8 @@ that installs mycelium-palace to know how to do.
 ## What does NOT belong here
 
 - **Personal portable skills** (workflow, fitness logging, etc.) — those live
-  in a separate `l-v-b/personal-skills` repo, synced via `mycelium skills sync`
-  (roadmap 3.1.6 B).
+  in a separate user-owned git repo configured via `personal_skills_repo` in
+  `~/.mycelium/config.json` and synced via `mycelium skills sync`.
 - **Machine-local skills** (host-specific display layouts, hardware quirks) —
   stay under `~/.claude/skills/` on the relevant machine.
 - **Built-in Claude Code skills** (init, review, loop, schedule, etc.) — don't

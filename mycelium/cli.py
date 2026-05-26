@@ -697,7 +697,7 @@ def main() -> None:
         print("                       Flags: --clients claude,cursor (default: auto-detect)")
         print("                              --auto-hooks (write directly, append-and-dedup-by-marker)")
         print("                              --add-mcp-server [--mcp-name NAME]")
-        print("                              --skills-repo URL (persist personal_skills_repo to config)")
+        print("                              --skills-repo URL (your personal skills git repo; saved to config.json)")
         print("                              --dry-run    (print the would-be config, no writes)")
         print("  skills sync          Clone/pull personal-skills repo to ~/.mycelium/skills/personal/")
         print("                       Flags: --repo URL (one-shot override)")
