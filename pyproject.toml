@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mycelium-palace"
-version = "1.0.5"
+version = "1.1.0"
 description = "A unified memory system for AI agents: verbatim captures (drawers), curated notes, and typed links — over MCP."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -26,6 +26,12 @@ dependencies = [
     "chromadb>=0.6",
     "pydantic>=2.0",
     "python-frontmatter>=1.1",
+]
+
+[project.optional-dependencies]
+team = [
+    "redis>=5.0",
+    "prometheus-client>=0.20",
 ]
 
 [project.urls]
