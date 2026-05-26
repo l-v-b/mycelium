@@ -12,9 +12,9 @@ Both calls go through ContextForge so the comparison reflects what the
 agent actually sees in real use.
 
 Usage:
-  CONTEXTFORGE_URL=http://nixliam.tail96a95d.ts.net:8000 \\
+  CONTEXTFORGE_URL=http://<your-contextforge-host>:8000 \\
   CONTEXTFORGE_TOKEN=... \\
-  SERVER_ID=e86ab056cea948c3b8ac28e0e1ca2199 \\
+  SERVER_ID=<your-aggregated-server-id> \\
   python3 scripts/verify_search_migration.py [--queries queries.json] [--top 5]
 """
 from __future__ import annotations

@@ -10,9 +10,9 @@ in the conversation history.
 
 Config: ~/.mycelium/config.json
 {
-  "contextforge_url":    "https://nixliam.tail96a95d.ts.net",
+  "contextforge_url":    "https://<your-contextforge-host>",
   "contextforge_token":  "<jwt without 'Bearer ' prefix>",
-  "mempalace_server_id": "e86ab056cea948c3b8ac28e0e1ca2199",
+  "mempalace_server_id": "<your-aggregated-server-id>",
   "n_notes":             60,
   "n_drawers":           60,
   "n_links":             20,
