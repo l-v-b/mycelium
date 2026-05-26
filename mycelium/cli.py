@@ -12,8 +12,19 @@ from typing import Iterable
 HOOKS_DIR  = Path(__file__).parent / "hooks"
 DEPLOY_DIR = Path.home() / ".mycelium"
 
+CONFIG_PATH          = DEPLOY_DIR / "config.json"
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+CLAUDE_MCP_PATH      = Path.home() / ".claude.json"
 CURSOR_HOOKS_PATH    = Path.home() / ".cursor" / "hooks.json"
+
+# Default name of the MCP server entry written by `install --add-mcp-server`.
+# Configurable via the --mcp-name flag. Users going through a ContextForge
+# gateway typically want "contextforge"; users connecting directly to a
+# local mycelium SSE endpoint typically want "mycelium".
+DEFAULT_MCP_NAME = "mycelium"
+
+# Vault layout — mirrors mycelium/config.py VAULT_DIR subdirs.
+VAULT_SUBDIRS = ("notes", "drawers", "diary", "concepts", "links")
 
 # Marker used to identify mycelium-owned hook entries during append-and-dedup.
 # Anything containing this substring in its command string is treated as ours
@@ -218,6 +229,58 @@ def _install_for_cursor(hooks_dir: Path, auto: bool, dry_run: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Config + MCP-server-entry helpers
+# ---------------------------------------------------------------------------
+
+def _read_config() -> dict:
+    """Read ~/.mycelium/config.json, returning empty dict if missing/invalid."""
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        return json.loads(CONFIG_PATH.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def _prompt(label: str, default: str = "") -> str:
+    """Interactive prompt with default shown in brackets."""
+    suffix = f" [{default}]" if default else ""
+    try:
+        raw = input(f"{label}{suffix}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.", file=sys.stderr)
+        sys.exit(1)
+    return raw or default
+
+
+def _claude_mcp_entry(url: str, token: str, server_id: str) -> dict:
+    """Build the Claude Code mcpServers entry for a mycelium / contextforge endpoint.
+
+    URL shape:
+      - With server_id: <url>/servers/<server_id>/mcp   (ContextForge-gateway pattern)
+      - Without:        <url>                            (direct mycelium SSE pattern)
+    """
+    full_url = f"{url.rstrip('/')}/servers/{server_id}/mcp" if server_id else url
+    entry: dict = {"type": "http", "url": full_url}
+    if token:
+        entry["headers"] = {"Authorization": f"Bearer {token}"}
+    return entry
+
+
+def _merge_claude_mcp(existing: dict, name: str, entry: dict) -> dict:
+    """Merge a single mcpServers entry into ~/.claude.json.
+
+    Preserves all other top-level keys (env, theme, projects, …) and other
+    mcpServers entries. Idempotent: same name re-writes the entry in place.
+    """
+    out = dict(existing)
+    servers = dict(out.get("mcpServers") or {})
+    servers[name] = entry
+    out["mcpServers"] = servers
+    return out
+
+
+# ---------------------------------------------------------------------------
 # install command
 # ---------------------------------------------------------------------------
 
@@ -232,26 +295,67 @@ def _parse_clients_flag(args: list[str]) -> str | None:
     return None
 
 
+def _parse_named_flag(args: list[str], name: str) -> str | None:
+    """Generic --foo X / --foo=X extractor."""
+    for i, a in enumerate(args):
+        if a == f"--{name}" and i + 1 < len(args):
+            return args[i + 1]
+        if a.startswith(f"--{name}="):
+            return a.split("=", 1)[1]
+    return None
+
+
+def _install_mcp_server_for_claude(name: str, entry: dict, dry_run: bool) -> None:
+    """Add/update an mcpServers entry in ~/.claude.json.
+
+    Idempotent — re-running with the same name replaces the entry in place.
+    All other top-level keys and other mcpServers entries survive untouched.
+    """
+    CLAUDE_MCP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = _backup_and_load(CLAUDE_MCP_PATH)
+    merged = _merge_claude_mcp(existing, name, entry)
+
+    if dry_run:
+        print(f"\n[claude/mcp] [DRY-RUN] Would write to {CLAUDE_MCP_PATH}:")
+        print(json.dumps({"mcpServers": {name: entry}}, indent=2))
+        return
+
+    CLAUDE_MCP_PATH.write_text(json.dumps(merged, indent=2))
+    print(f"\n[claude/mcp] Wrote mcpServers entry {name!r} → {CLAUDE_MCP_PATH}")
+
+
 def cmd_install(args: list[str]) -> None:
     """Deploy hooks to ~/.mycelium/hooks/ and (with --auto-hooks) wire them
-    into one or more client config files.
+    into one or more client config files. Optionally also register the MCP
+    server itself in the client's mcpServers config.
 
     Usage:
-      mycelium install [--clients claude,cursor] [--auto-hooks] [--dry-run]
+      mycelium install [--clients claude,cursor]
+                       [--auto-hooks]
+                       [--add-mcp-server] [--mcp-name NAME]
+                       [--dry-run]
 
     Without --clients: autodetect which clients are installed (Claude Code at
     ~/.claude/, Cursor at ~/.cursor/) and target each one.
 
-    Without --auto-hooks: print the snippet for each target client; user pastes
-    it themselves. With --auto-hooks: write the entries directly using an
+    Without --auto-hooks: print the hooks snippet for each target client; user
+    pastes it themselves. With --auto-hooks: write directly using an
     append-and-dedup-by-marker merge — re-runs are idempotent AND other tools'
     hooks at the same events survive untouched.
 
+    --add-mcp-server: also write an mcpServers entry to ~/.claude.json based
+    on ~/.mycelium/config.json (run `mycelium init` first to create that).
+    Currently Claude-only; Cursor's MCP config will be added when needed.
+
+    --mcp-name NAME: name of the mcpServers entry (default: "mycelium").
+
     --dry-run: print the resulting config without writing.
     """
-    auto    = "--auto-hooks" in args
-    dry_run = "--dry-run"    in args
-    clients = _resolve_clients(_parse_clients_flag(args))
+    auto           = "--auto-hooks"     in args
+    dry_run        = "--dry-run"        in args
+    add_mcp_server = "--add-mcp-server" in args
+    mcp_name       = _parse_named_flag(args, "mcp-name") or DEFAULT_MCP_NAME
+    clients        = _resolve_clients(_parse_clients_flag(args))
 
     if not clients:
         print("ERROR: No clients to install for. Pass --clients claude,cursor", file=sys.stderr)
@@ -275,6 +379,113 @@ def cmd_install(args: list[str]) -> None:
         _install_for_claude(hooks_out, auto, dry_run)
     if "cursor" in clients:
         _install_for_cursor(hooks_out, auto, dry_run)
+
+    if add_mcp_server:
+        cfg = _read_config()
+        url       = cfg.get("contextforge_url", "")
+        token     = cfg.get("contextforge_token", "")
+        server_id = cfg.get("mempalace_server_id", "")
+        if not url:
+            print("\nERROR: --add-mcp-server requires contextforge_url in ~/.mycelium/config.json.",
+                  file=sys.stderr)
+            print("       Run `mycelium init` first to create it.", file=sys.stderr)
+            sys.exit(1)
+        entry = _claude_mcp_entry(url, token, server_id)
+        if "claude" in clients:
+            _install_mcp_server_for_claude(mcp_name, entry, dry_run)
+        if "cursor" in clients:
+            print("\n[cursor/mcp] --add-mcp-server: Cursor MCP config not yet supported. "
+                  "Edit ~/.cursor/mcp.json manually with the entry shown above.")
+
+
+def cmd_init(args: list[str]) -> None:
+    """Bootstrap mycelium on a new machine.
+
+    Creates ~/.mycelium/config.json from interactive prompts (or flags) and
+    optionally scaffolds the vault directory structure. Re-runnable — existing
+    config values become defaults for the prompts.
+
+    Usage:
+      mycelium init [--non-interactive]
+                    [--url URL] [--token TOKEN] [--server-id ID]
+                    [--vault-dir PATH] [--skip-vault] [--force]
+
+    --non-interactive: don't prompt; use supplied flags + existing config.json
+        values as defaults. Useful for CI / scripted bootstraps.
+
+    --url, --token, --server-id: override config values from the command line.
+
+    --vault-dir PATH: directory under which the vault subdirs (notes, drawers,
+        diary, concepts, links) are created. Defaults to ~/.mycelium/data/vault.
+
+    --skip-vault: don't create the vault directory structure (only write
+        config.json — for hook-only deployments connecting to a remote server).
+
+    --force: overwrite existing config.json without re-prompting (still uses
+        existing values as the defaults that get re-written).
+    """
+    non_interactive = "--non-interactive" in args
+    skip_vault      = "--skip-vault"      in args
+    force           = "--force"           in args
+
+    existing = _read_config()
+
+    url_arg       = _parse_named_flag(args, "url")
+    token_arg     = _parse_named_flag(args, "token")
+    server_id_arg = _parse_named_flag(args, "server-id")
+    vault_arg     = _parse_named_flag(args, "vault-dir")
+
+    default_url       = url_arg       if url_arg       is not None else existing.get("contextforge_url", "")
+    default_token     = token_arg     if token_arg     is not None else existing.get("contextforge_token", "")
+    default_server    = server_id_arg if server_id_arg is not None else existing.get("mempalace_server_id", "")
+    default_vault     = vault_arg     if vault_arg     is not None else str(DEPLOY_DIR / "data" / "vault")
+
+    if non_interactive:
+        url, token, server_id, vault_dir = default_url, default_token, default_server, default_vault
+    else:
+        print("mycelium init — bootstrapping ~/.mycelium/config.json.\n"
+              "(Press Enter to accept the default in brackets.)\n")
+        url       = _prompt("ContextForge URL (or leave empty for direct connection)", default_url)
+        token     = _prompt("ContextForge bearer token (without 'Bearer ' prefix)", default_token)
+        server_id = _prompt("Aggregated server ID (gateway mode only)", default_server)
+        vault_dir = _prompt("Vault directory", default_vault) if not skip_vault else default_vault
+
+    if CONFIG_PATH.exists() and not force and not non_interactive:
+        confirm = _prompt(f"\n{CONFIG_PATH} already exists. Overwrite? [y/N]", "N")
+        if confirm.lower() not in ("y", "yes"):
+            print("Aborted; config unchanged.", file=sys.stderr)
+            sys.exit(1)
+
+    DEPLOY_DIR.mkdir(parents=True, exist_ok=True)
+    cfg = dict(existing)
+    cfg.update({
+        "contextforge_url":    url,
+        "contextforge_token":  token,
+        "mempalace_server_id": server_id,
+    })
+    cfg.setdefault("search_limit", 10)
+    cfg.setdefault("max_distance", 0.75)
+    if CONFIG_PATH.exists():
+        backup = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".mycelium-bak")
+        shutil.copy2(CONFIG_PATH, backup)
+        print(f"  Backed up existing config → {backup}")
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    print(f"  Wrote {CONFIG_PATH}")
+
+    if not skip_vault:
+        vault_root = Path(vault_dir).expanduser()
+        vault_root.mkdir(parents=True, exist_ok=True)
+        for sub in VAULT_SUBDIRS:
+            (vault_root / sub).mkdir(exist_ok=True)
+        print(f"  Vault directory: {vault_root}")
+        print(f"    subdirs: {', '.join(VAULT_SUBDIRS)}")
+    else:
+        print("  Skipped vault directory scaffolding (--skip-vault).")
+
+    print("\nDone. Next steps:")
+    print("  mycelium install --auto-hooks            # wire hooks into Claude Code / Cursor")
+    print("  mycelium install --add-mcp-server        # register MCP server in ~/.claude.json")
+    print("  python -m mycelium                       # start the MCP server (if running locally)")
 
 
 def cmd_verify(args: list[str]) -> None:
@@ -332,9 +543,13 @@ def main() -> None:
     if not args or args[0] in ("-h", "--help"):
         print("Usage: mycelium <command> [args]")
         print("\nCommands:")
+        print("  init                 Bootstrap ~/.mycelium/config.json + vault dirs (interactive)")
+        print("                       Flags: --non-interactive, --url, --token, --server-id,")
+        print("                              --vault-dir, --skip-vault, --force")
         print("  install              Deploy hooks + (with --auto-hooks) wire into Claude Code / Cursor")
         print("                       Flags: --clients claude,cursor (default: auto-detect)")
         print("                              --auto-hooks (write directly, append-and-dedup-by-marker)")
+        print("                              --add-mcp-server [--mcp-name NAME]")
         print("                              --dry-run    (print the would-be config, no writes)")
         print("  verify               Health check: imports, vault, index counts")
         print("  reindex              Sync ChromaDB (notes, drawers, links) with vault/ markdown files")
@@ -343,6 +558,7 @@ def main() -> None:
 
     cmd, rest = args[0], args[1:]
     dispatch = {
+        "init":                cmd_init,
         "install":             cmd_install,
         "verify":              cmd_verify,
         "reindex":             cmd_reindex,
