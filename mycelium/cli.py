@@ -174,10 +174,11 @@ def _resolve_clients(arg: str | None) -> set[str]:
 # Per-client install routines
 # ---------------------------------------------------------------------------
 
-def _backup_and_load(path: Path) -> dict:
+def _backup_and_load(path: Path, dry_run: bool = False) -> dict:
     """Read JSON at `path`, taking a `.mycelium-bak` snapshot if it exists.
 
-    Returns empty dict if the file is missing.
+    Returns empty dict if the file is missing. Under `dry_run`, the
+    backup copy is NOT written — only the "would back up" line prints.
     """
     if not path.exists():
         return {}
@@ -187,33 +188,42 @@ def _backup_and_load(path: Path) -> dict:
         print(f"ERROR: {path} is not valid JSON: {e}", file=sys.stderr)
         sys.exit(1)
     backup = path.with_suffix(path.suffix + ".mycelium-bak")
-    shutil.copy2(path, backup)
-    print(f"  Backed up existing config → {backup}")
+    if dry_run:
+        print(f"  [DRY-RUN] Would back up existing config → {backup}")
+    else:
+        shutil.copy2(path, backup)
+        print(f"  Backed up existing config → {backup}")
     return existing if isinstance(existing, dict) else {}
 
 
-def _deploy_skills(skills_src: Path, skills_dst: Path) -> int:
+def _deploy_skills(skills_src: Path, skills_dst: Path, dry_run: bool = False) -> int:
     """Copy in-package skill directories from `skills_src` to `skills_dst`.
 
     Each top-level subdirectory of `skills_src` is a skill. `README.md`
     at the top level is informational only and not copied (it documents
     the convention for developers, not Claude clients).
 
-    Returns the number of skills deployed (excluding the README).
+    Under `dry_run`, no directories are created or copied — only
+    "[DRY-RUN] Would install skill: ..." lines print. Returns the
+    number of skills that WOULD be (or were) deployed.
     """
     if not skills_src.is_dir():
         return 0
-    skills_dst.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        skills_dst.mkdir(parents=True, exist_ok=True)
     deployed = 0
     for entry in sorted(skills_src.iterdir()):
         if entry.name == "README.md":
             continue
         if entry.is_dir():
             target = skills_dst / entry.name
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.copytree(entry, target)
-            print(f"  Installed skill: {target}")
+            if dry_run:
+                print(f"  [DRY-RUN] Would install skill: {target}")
+            else:
+                if target.exists():
+                    shutil.rmtree(target)
+                shutil.copytree(entry, target)
+                print(f"  Installed skill: {target}")
             deployed += 1
     return deployed
 
@@ -247,8 +257,9 @@ def _install_for_claude(hooks_dir: Path, skills_dirs: list[Path], auto: bool, dr
         print("(Re-run with --auto-hooks to write this directly.)")
         return
 
-    CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    existing = _backup_and_load(CLAUDE_SETTINGS_PATH)
+    if not dry_run:
+        CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = _backup_and_load(CLAUDE_SETTINGS_PATH, dry_run=dry_run)
     merged = _merge_claude_settings(existing, snippet)
     for d in skills_dirs:
         merged = _merge_claude_skills_dirs(merged, str(d))
@@ -273,8 +284,9 @@ def _install_for_cursor(hooks_dir: Path, auto: bool, dry_run: bool) -> None:
         print("(Re-run with --auto-hooks to write this directly.)")
         return
 
-    CURSOR_HOOKS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    existing = _backup_and_load(CURSOR_HOOKS_PATH)
+    if not dry_run:
+        CURSOR_HOOKS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = _backup_and_load(CURSOR_HOOKS_PATH, dry_run=dry_run)
     merged = _merge_cursor_hooks(existing, snippet)
 
     if dry_run:
@@ -370,8 +382,9 @@ def _install_mcp_server_for_claude(name: str, entry: dict, dry_run: bool) -> Non
     Idempotent — re-running with the same name replaces the entry in place.
     All other top-level keys and other mcpServers entries survive untouched.
     """
-    CLAUDE_MCP_PATH.parent.mkdir(parents=True, exist_ok=True)
-    existing = _backup_and_load(CLAUDE_MCP_PATH)
+    if not dry_run:
+        CLAUDE_MCP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = _backup_and_load(CLAUDE_MCP_PATH, dry_run=dry_run)
     merged = _merge_claude_mcp(existing, name, entry)
 
     if dry_run:
@@ -420,30 +433,38 @@ def cmd_install(args: list[str]) -> None:
     # If --skills-repo URL was passed, persist into ~/.mycelium/config.json
     # so future `mycelium skills sync` calls find it automatically.
     if skills_repo is not None:
-        DEPLOY_DIR.mkdir(parents=True, exist_ok=True)
-        cfg = _read_config()
-        cfg["personal_skills_repo"] = skills_repo
-        CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
-        print(f"  Persisted personal_skills_repo={skills_repo} → {CONFIG_PATH}")
+        if dry_run:
+            print(f"  [DRY-RUN] Would persist personal_skills_repo={skills_repo} → {CONFIG_PATH}")
+        else:
+            DEPLOY_DIR.mkdir(parents=True, exist_ok=True)
+            cfg = _read_config()
+            cfg["personal_skills_repo"] = skills_repo
+            CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+            print(f"  Persisted personal_skills_repo={skills_repo} → {CONFIG_PATH}")
 
     if not clients:
         print("ERROR: No clients to install for. Pass --clients claude,cursor", file=sys.stderr)
         print("or install Claude Code / Cursor first (auto-detect looks for ~/.claude/, ~/.cursor/).", file=sys.stderr)
         sys.exit(1)
 
-    DEPLOY_DIR.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        DEPLOY_DIR.mkdir(parents=True, exist_ok=True)
     hooks_out = DEPLOY_DIR / "hooks"
-    hooks_out.mkdir(exist_ok=True)
+    if not dry_run:
+        hooks_out.mkdir(exist_ok=True)
     for hook in ("userpromptsubmit.py", "stop.py", "verbatim_stop.py"):
         src = HOOKS_DIR / hook
         dst = hooks_out / hook
         if src.exists():
-            shutil.copy2(src, dst)
-            print(f"  Installed: {dst}")
+            if dry_run:
+                print(f"  [DRY-RUN] Would install: {dst}")
+            else:
+                shutil.copy2(src, dst)
+                print(f"  Installed: {dst}")
         else:
             print(f"  WARNING: {src} not found in package")
 
-    skills_count = _deploy_skills(SKILLS_DIR, DEPLOYED_MYCELIUM_SKILLS_DIR)
+    skills_count = _deploy_skills(SKILLS_DIR, DEPLOYED_MYCELIUM_SKILLS_DIR, dry_run=dry_run)
     skills_dirs: list[Path] = []
     if skills_count > 0:
         skills_dirs.append(DEPLOYED_MYCELIUM_SKILLS_DIR)
