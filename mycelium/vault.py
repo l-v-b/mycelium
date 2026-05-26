@@ -166,11 +166,15 @@ def write_note(
     tags: list[str] | None = None,
     source_memories: list[str] | None = None,
     status: str | None = None,
+    author: str | None = None,
+    intent: str | None = None,
+    committed: bool = True,
 ) -> tuple[str, Path]:
     """Write or upsert a curated note to disk.
 
-    Frontmatter fields:
-        id, title, tags, source_memories, created, updated, status
+    Frontmatter fields (v1.0.5+):
+        id, title, tags, source_memories, created, updated, status,
+        author, committed_at, source_intent
 
     `status` is for notes that represent tracked work. Pass None to leave the
     existing value alone on upsert (or to omit the field on first write).
@@ -178,7 +182,21 @@ def write_note(
     "wont-fix" | "blocked".
 
     `created` is preserved across upserts (read from existing file if present).
+
+    `author` defaults to mycelium.config.AUTHOR (MYCELIUM_AUTHOR env or git
+    user.email or "unknown"). In team mode (Phase 3.3+), the per-call author
+    is derived from the auth context.
+
+    `intent` is the agent's reasoning about why this note exists. Currently
+    optional; will be required for write_note in v2.0.0.
+
+    `committed` controls the committed_at frontmatter flag. True (default)
+    stamps a fresh UTC timestamp synchronously — matches today's personal-mode
+    semantics. False writes `committed_at: null`, signalling a team-mode draft
+    awaiting the writer worker's chroma upsert.
     """
+    from mycelium.write_path.frontmatter import stamp_author, stamp_committed, stamp_intent
+
     tags = tags or []
     source_memories = source_memories or []
 
@@ -211,6 +229,10 @@ def write_note(
     }
     if final_status:
         fields["status"] = final_status
+
+    stamp_author(fields, author)
+    stamp_committed(fields, committed=committed)
+    stamp_intent(fields, intent)
 
     post = frontmatter.Post(content, **fields)
     filepath.write_text(frontmatter.dumps(post), encoding="utf-8")
@@ -257,21 +279,32 @@ def write_drawer(
     content: str,
     wing: str,
     room: str,
+    author: str | None = None,
+    committed: bool = True,
 ) -> tuple[str, Path]:
-    """Write a verbatim drawer to disk and return (drawer_id, filepath)."""
+    """Write a verbatim drawer to disk and return (drawer_id, filepath).
+
+    See write_note for `author` / `committed` semantics. Drawers are verbatim
+    captures and don't accept `source_intent` — no synthesis reasoning to attach.
+    """
+    from mycelium.write_path.frontmatter import stamp_author, stamp_committed
+
     did   = drawer_id(content, wing, room)
     now   = datetime.now(timezone.utc).isoformat()
 
     DRAWERS_DIR.mkdir(parents=True, exist_ok=True)
     filepath = DRAWERS_DIR / f"{did}.md"
 
-    post = frontmatter.Post(
-        content,
-        id=did,
-        wing=wing,
-        room=room,
-        filed_at=now,
-    )
+    fields: dict[str, Any] = {
+        "id":       did,
+        "wing":     wing,
+        "room":     room,
+        "filed_at": now,
+    }
+    stamp_author(fields, author)
+    stamp_committed(fields, committed=committed)
+
+    post = frontmatter.Post(content, **fields)
     filepath.write_text(frontmatter.dumps(post), encoding="utf-8")
     _git_commit(f"drawer: {wing}/{room}")
     return did, filepath
@@ -384,11 +417,18 @@ def write_link(
     target_id: str, target_type: str, target_label: str,
     relation_type: str, description: str,
     ended_at: str = "",
+    author: str | None = None,
+    committed: bool = True,
 ) -> tuple[str, Path]:
     """Persist a typed link as vault/links/{link_id}.md. Frontmatter holds the
     structured fields; the body is empty (links have no narrative content).
     Returns (link_id, filepath).
+
+    See write_note for `author` / `committed` semantics. Links don't accept
+    `intent` (no synthesis content to attach reasoning to).
     """
+    from mycelium.write_path.frontmatter import stamp_author, stamp_committed
+
     lid = link_id(source_id, relation_type, target_id)
     now = datetime.now(timezone.utc).isoformat()
 
@@ -404,20 +444,23 @@ def write_link(
         except Exception:
             pass
 
-    post = frontmatter.Post(
-        "",  # empty body — all data in frontmatter
-        link_id=lid,
-        source_id=source_id,
-        source_type=source_type,
-        source_label=source_label,
-        target_id=target_id,
-        target_type=target_type,
-        target_label=target_label,
-        relation_type=relation_type,
-        description=description,
-        created_at=created_at,
-        ended_at=ended_at,
-    )
+    fields: dict[str, Any] = {
+        "link_id":       lid,
+        "source_id":     source_id,
+        "source_type":   source_type,
+        "source_label":  source_label,
+        "target_id":     target_id,
+        "target_type":   target_type,
+        "target_label":  target_label,
+        "relation_type": relation_type,
+        "description":   description,
+        "created_at":    created_at,
+        "ended_at":      ended_at,
+    }
+    stamp_author(fields, author)
+    stamp_committed(fields, committed=committed)
+
+    post = frontmatter.Post("", **fields)
     filepath.write_text(frontmatter.dumps(post), encoding="utf-8")
     _git_commit(f"link: {source_label} --[{relation_type}]--> {target_label}")
     return lid, filepath
@@ -457,16 +500,23 @@ def delete_link_file(lid: str) -> bool:
 # Diary
 # ---------------------------------------------------------------------------
 
-def diary_write(content: str, session_id: str = "") -> Path:
+def diary_write(content: str, session_id: str = "", author: str | None = None) -> Path:
     """Append a diary entry for today. Re-indexes the day's full file into
     the drawers collection so diary content surfaces in search/context.
+
+    `author` is stamped in the per-entry HTML comment alongside the timestamp
+    and session id. Defaults to mycelium.config.AUTHOR.
     """
+    if author is None:
+        from mycelium.config import AUTHOR
+        author = AUTHOR
+
     DIARY_DIR.mkdir(parents=True, exist_ok=True)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     filepath = DIARY_DIR / f"{today}.md"
 
     now = datetime.now(timezone.utc).isoformat()
-    entry = f"\n\n---\n<!-- {now} session={session_id} -->\n{content}"
+    entry = f"\n\n---\n<!-- {now} session={session_id} author={author} -->\n{content}"
 
     if filepath.exists():
         filepath.write_text(filepath.read_text(encoding="utf-8") + entry, encoding="utf-8")
