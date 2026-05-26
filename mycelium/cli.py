@@ -586,9 +586,20 @@ def cmd_init(args: list[str]) -> None:
     config values become defaults for the prompts.
 
     Usage:
-      mycelium init [--non-interactive]
+      mycelium init [--non-interactive] [--mode client|server]
                     [--url URL] [--token TOKEN] [--server-id ID]
                     [--vault-dir PATH] [--skip-vault] [--force]
+
+    --mode client|server: deployment mode.
+        - `client`: this machine ONLY connects to a remote mycelium MCP via
+          ContextForge. No local vault; no server defaults written. Implies
+          --skip-vault. Best for hook-only / federated deployments.
+        - `server`: this machine runs the mycelium MCP server locally; vault
+          scaffolding + server-side defaults (search_limit, max_distance) are
+          written. Best for personal / standalone setups.
+        - In interactive mode (default), `init` ASKS this question first.
+        - In --non-interactive mode without --mode, defaults to `server`
+          (the historical behaviour) unless --skip-vault is also passed.
 
     --non-interactive: don't prompt; use supplied flags + existing config.json
         values as defaults. Useful for CI / scripted bootstraps.
@@ -597,15 +608,16 @@ def cmd_init(args: list[str]) -> None:
 
     --vault-dir PATH: directory under which the vault subdirs (notes, drawers,
         diary, concepts, links) are created. Defaults to ~/.mycelium/data/vault.
+        Ignored in client mode.
 
-    --skip-vault: don't create the vault directory structure (only write
-        config.json — for hook-only deployments connecting to a remote server).
+    --skip-vault: short for --mode client (or equivalent — both skip the vault
+        scaffolding). Kept for backwards compatibility.
 
     --force: overwrite existing config.json without re-prompting (still uses
         existing values as the defaults that get re-written).
     """
     non_interactive = "--non-interactive" in args
-    skip_vault      = "--skip-vault"      in args
+    skip_vault_flag = "--skip-vault"      in args
     force           = "--force"           in args
 
     existing = _read_config()
@@ -614,21 +626,56 @@ def cmd_init(args: list[str]) -> None:
     token_arg     = _parse_named_flag(args, "token")
     server_id_arg = _parse_named_flag(args, "server-id")
     vault_arg     = _parse_named_flag(args, "vault-dir")
+    mode_arg      = _parse_named_flag(args, "mode")
+
+    if mode_arg is not None and mode_arg not in ("client", "server"):
+        print(f"ERROR: --mode must be 'client' or 'server', got {mode_arg!r}", file=sys.stderr)
+        sys.exit(1)
 
     default_url       = url_arg       if url_arg       is not None else existing.get("contextforge_url", "")
     default_token     = token_arg     if token_arg     is not None else existing.get("contextforge_token", "")
     default_server    = server_id_arg if server_id_arg is not None else existing.get("mempalace_server_id", "")
     default_vault     = vault_arg     if vault_arg     is not None else str(DEPLOY_DIR / "data" / "vault")
 
-    if non_interactive:
-        url, token, server_id, vault_dir = default_url, default_token, default_server, default_vault
+    # Resolve mode.
+    if mode_arg is not None:
+        mode = mode_arg
+    elif skip_vault_flag:
+        # --skip-vault is the legacy way of saying "I'm a client"
+        mode = "client"
+    elif non_interactive:
+        # Historical default for non-interactive bootstraps
+        mode = "server"
     else:
         print("mycelium init — bootstrapping ~/.mycelium/config.json.\n"
               "(Press Enter to accept the default in brackets.)\n")
+        mode_default = "server" if existing.get("contextforge_url", "").startswith(("http://localhost", "http://127.")) else (
+            "client" if existing else "server"
+        )
+        mode_raw = _prompt(
+            "Deployment mode — will this machine run the mycelium MCP server locally?\n"
+            "  server = run server here (full vault + ChromaDB)\n"
+            "  client = connect to a remote mycelium (hooks + MCP entry only)\n"
+            "[client/server]",
+            mode_default,
+        ).strip().lower()
+        if mode_raw not in ("client", "server"):
+            print(f"ERROR: mode must be 'client' or 'server', got {mode_raw!r}", file=sys.stderr)
+            sys.exit(1)
+        mode = mode_raw
+
+    is_client = mode == "client"
+
+    if non_interactive:
+        url, token, server_id, vault_dir = default_url, default_token, default_server, default_vault
+    else:
         url       = _prompt("ContextForge URL (or leave empty for direct connection)", default_url)
         token     = _prompt("ContextForge bearer token (without 'Bearer ' prefix)", default_token)
         server_id = _prompt("Aggregated server ID (gateway mode only)", default_server)
-        vault_dir = _prompt("Vault directory", default_vault) if not skip_vault else default_vault
+        if is_client:
+            vault_dir = default_vault  # ignored in client mode
+        else:
+            vault_dir = _prompt("Vault directory", default_vault)
 
     if CONFIG_PATH.exists() and not force and not non_interactive:
         confirm = _prompt(f"\n{CONFIG_PATH} already exists. Overwrite? [y/N]", "N")
@@ -643,29 +690,35 @@ def cmd_init(args: list[str]) -> None:
         "contextforge_token":  token,
         "mempalace_server_id": server_id,
     })
-    cfg.setdefault("search_limit", 10)
-    cfg.setdefault("max_distance", 0.75)
+    cfg["mode"] = mode
+    # Server-side defaults: only set on first write AND only in server mode.
+    # Client-only installs don't need them and shouldn't have noise in their
+    # config.json (the values would never be read).
+    if not is_client:
+        cfg.setdefault("search_limit", 10)
+        cfg.setdefault("max_distance", 0.75)
     if CONFIG_PATH.exists():
         backup = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".mycelium-bak")
         shutil.copy2(CONFIG_PATH, backup)
         print(f"  Backed up existing config → {backup}")
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
-    print(f"  Wrote {CONFIG_PATH}")
+    print(f"  Wrote {CONFIG_PATH} (mode={mode})")
 
-    if not skip_vault:
+    if is_client:
+        print("  Skipped vault directory scaffolding (client mode — server runs elsewhere).")
+    else:
         vault_root = Path(vault_dir).expanduser()
         vault_root.mkdir(parents=True, exist_ok=True)
         for sub in VAULT_SUBDIRS:
             (vault_root / sub).mkdir(exist_ok=True)
         print(f"  Vault directory: {vault_root}")
         print(f"    subdirs: {', '.join(VAULT_SUBDIRS)}")
-    else:
-        print("  Skipped vault directory scaffolding (--skip-vault).")
 
     print("\nDone. Next steps:")
     print("  mycelium install --auto-hooks            # wire hooks into Claude Code / Cursor")
     print("  mycelium install --add-mcp-server        # register MCP server in ~/.claude.json")
-    print("  python -m mycelium                       # start the MCP server (if running locally)")
+    if not is_client:
+        print("  mycelium serve                           # start the MCP server (if running locally)")
 
 
 def cmd_serve(args: list[str]) -> None:
@@ -755,7 +808,8 @@ def main() -> None:
         print("Usage: mycelium <command> [args]")
         print("\nCommands:")
         print("  init                 Bootstrap ~/.mycelium/config.json + vault dirs (interactive)")
-        print("                       Flags: --non-interactive, --url, --token, --server-id,")
+        print("                       Flags: --mode client|server (skips vault prompt in client mode)")
+        print("                              --non-interactive, --url, --token, --server-id,")
         print("                              --vault-dir, --skip-vault, --force")
         print("  install              Deploy hooks + (with --auto-hooks) wire into Claude Code / Cursor")
         print("                       Flags: --clients claude,cursor (default: auto-detect)")
