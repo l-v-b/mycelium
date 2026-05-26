@@ -81,6 +81,9 @@ AUTHOR = _resolve_default_author()
 VAULT_GIT_AUTHOR_NAME  = os.environ.get("MYCELIUM_GIT_AUTHOR", "mycelium")
 VAULT_GIT_AUTHOR_EMAIL = os.environ.get("MYCELIUM_GIT_EMAIL", "mycelium@localhost")
 
+# Team-mode Redis (only relevant when MYCELIUM_DEPLOYMENT_MODE=team).
+REDIS_URL = os.environ.get("MYCELIUM_REDIS_URL", "redis://localhost:6379/0")
+
 
 # ---------------------------------------------------------------------------
 # User config from ~/.mycelium/config.json

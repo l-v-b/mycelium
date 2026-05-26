@@ -350,7 +350,24 @@ def file(
 
     Returns:
         Confirmation with drawer_id.
+
+    In team mode (MYCELIUM_DEPLOYMENT_MODE=team), the chroma upsert is
+    deferred to the writer worker; closet update still happens synchronously.
     """
+    from mycelium.config import DEPLOYMENT_MODE
+
+    if DEPLOYMENT_MODE == "team":
+        from mycelium.write_path.queued import file_queued
+        result = file_queued(content, wing, room)
+        # Closet update is local + cheap, runs in both modes synchronously.
+        try:
+            from mycelium.vault import drawer_id as _did_fn
+            did = _did_fn(content, wing, room)
+            _vault_update_closet_for_drawer(did, wing, room, content)
+        except Exception:
+            pass
+        return result
+
     did, filepath = _vault_write_drawer(content, wing, room)
     _index_drawer(did, content, wing, room, str(filepath))
     try:
@@ -507,60 +524,40 @@ def write_note(
         semantically similar note with a different title already exists (the
         caller may want to update that note instead of creating a parallel one,
         since write_note upserts by title).
+
+    In team mode (MYCELIUM_DEPLOYMENT_MODE=team), the disk write happens
+    synchronously and a signal is enqueued to Redis; the writer worker
+    commits to ChromaDB asynchronously (~minutes lag worst-case).
     """
-    tags = tags or []
-    source_memories = source_memories or []
+    from mycelium.config import DEPLOYMENT_MODE
 
-    # Soft duplicate warning: look for a semantically-similar existing note
-    # with a DIFFERENT title before writing. Same-title cases are upserts and
-    # don't warrant a warning. Best-effort — never blocks the write.
-    duplicate_warning: dict | None = None
-    try:
-        existing_query = json.loads(query_notes(title, n_results=1))
-        candidates = existing_query.get("notes", [])
-        if candidates:
-            top = candidates[0]
-            top_title = (top.get("title") or "")
-            top_distance = top.get("distance", 1.0)
-            # Threshold 0.5 reflects MiniLM cosine distances for this corpus:
-            # near-identical titles register ~0.4–0.5; tangentially related stuff
-            # sits at 0.6+. 0.5 catches the obvious dups without false positives.
-            if top_distance < 0.5 and top_title.strip().lower() != title.strip().lower():
-                duplicate_warning = {
-                    "message":          "Similar existing note found — consider updating that one instead (write_note upserts by title).",
-                    "existing_title":   top_title,
-                    "existing_note_id": top.get("note_id"),
-                    "distance":         top_distance,
-                }
-    except Exception:
-        pass  # never let the lookup block a real write
+    def _dedupe_query(q: str, n: int) -> str:
+        return query_notes(q, n_results=n)
 
-    nid, filepath = _vault_write_note(title, content, tags, source_memories, status)
-    now = datetime.now(timezone.utc).isoformat()
+    if DEPLOYMENT_MODE == "team":
+        from mycelium.write_path.queued import write_note_queued
+        return write_note_queued(
+            title, content, tags, source_memories, status,
+            intent=None,
+            query_notes_fn=_dedupe_query,
+        )
 
-    loaded = _vault_load_note(filepath)
-    final_status = loaded.get("status", "") if loaded else (status or "")
+    from mycelium.write_path.direct import write_note_direct
 
-    metadata = {
-        "title":           title,
-        "slug":            _slugify(title),
-        "tags":            json.dumps(tags),
-        "source_memories": json.dumps(source_memories),
-        "created_at":      now,
-        "filepath":        str(filepath),
-    }
-    if final_status:
-        metadata["status"] = final_status
+    def _upsert_note(nid: str, t: str, c: str, metadata: dict) -> None:
+        notes_collection().upsert(
+            ids=[nid],
+            documents=[f"{t}\n\n{c}"],
+            metadatas=[metadata],
+        )
 
-    notes_collection().upsert(
-        ids=[nid],
-        documents=[f"{title}\n\n{content}"],
-        metadatas=[metadata],
+    return write_note_direct(
+        title, content, tags, source_memories, status,
+        intent=None,  # required in v2.0.0; optional today
+        query_notes_fn=_dedupe_query,
+        upsert_note_fn=_upsert_note,
+        load_note_fn=_vault_load_note,
     )
-    confirmation = f"Note written: {nid}\nFile: {filepath}"
-    if duplicate_warning:
-        confirmation += f"\nWarning: {json.dumps(duplicate_warning, indent=2)}"
-    return confirmation
 
 
 @mcp.tool()
@@ -898,7 +895,17 @@ def diary_write(content: str, session_id: str = "") -> str:
     Args:
         content: Entry content.
         session_id: Optional session ID for attribution.
+
+    In team mode (MYCELIUM_DEPLOYMENT_MODE=team), the daily file is written
+    synchronously and a diary signal is enqueued; the worker re-indexes the
+    day's full file into chroma asynchronously.
     """
+    from mycelium.config import DEPLOYMENT_MODE
+
+    if DEPLOYMENT_MODE == "team":
+        from mycelium.write_path.queued import diary_write_queued
+        return diary_write_queued(content, session_id)
+
     filepath = _vault_diary_write(content, session_id)
     return f"Diary entry written: {filepath}"
 
