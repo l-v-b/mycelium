@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Iterable
 
 HOOKS_DIR  = Path(__file__).parent / "hooks"
+SKILLS_DIR = Path(__file__).parent / "skills"
 DEPLOY_DIR = Path.home() / ".mycelium"
+
+# Where in-package skills land after `mycelium install`. Adding this path to
+# the client's skillsDirectories makes the skills discoverable.
+DEPLOYED_MYCELIUM_SKILLS_DIR = DEPLOY_DIR / "skills" / "mycelium"
 
 CONFIG_PATH          = DEPLOY_DIR / "config.json"
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
@@ -184,17 +189,66 @@ def _backup_and_load(path: Path) -> dict:
     return existing if isinstance(existing, dict) else {}
 
 
-def _install_for_claude(hooks_dir: Path, auto: bool, dry_run: bool) -> None:
+def _deploy_skills(skills_src: Path, skills_dst: Path) -> int:
+    """Copy in-package skill directories from `skills_src` to `skills_dst`.
+
+    Each top-level subdirectory of `skills_src` is a skill. `README.md`
+    at the top level is informational only and not copied (it documents
+    the convention for developers, not Claude clients).
+
+    Returns the number of skills deployed (excluding the README).
+    """
+    if not skills_src.is_dir():
+        return 0
+    skills_dst.mkdir(parents=True, exist_ok=True)
+    deployed = 0
+    for entry in sorted(skills_src.iterdir()):
+        if entry.name == "README.md":
+            continue
+        if entry.is_dir():
+            target = skills_dst / entry.name
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(entry, target)
+            print(f"  Installed skill: {target}")
+            deployed += 1
+    return deployed
+
+
+def _merge_claude_skills_dirs(existing: dict, path: str) -> dict:
+    """Idempotently append `path` to settings.skillsDirectories.
+
+    Preserves any other entries in the list (e.g. user-managed skill dirs
+    or other tools' skills). Re-running is a no-op once the path is present.
+    """
+    out = dict(existing)
+    dirs = list(out.get("skillsDirectories") or [])
+    if path not in dirs:
+        dirs.append(path)
+    out["skillsDirectories"] = dirs
+    return out
+
+
+def _install_for_claude(hooks_dir: Path, skills_dir: Path | None, auto: bool, dry_run: bool) -> None:
     snippet = _claude_hooks_snippet(hooks_dir)
+    skills_snippet = (
+        {"skillsDirectories": [str(skills_dir)]} if skills_dir else {}
+    )
+
     if not auto:
         print("\n[claude] Add to ~/.claude/settings.json hooks section:")
         print(json.dumps({"hooks": snippet}, indent=2))
+        if skills_snippet:
+            print("\n[claude] Also append to ~/.claude/settings.json skillsDirectories:")
+            print(json.dumps(skills_snippet, indent=2))
         print("(Re-run with --auto-hooks to write this directly.)")
         return
 
     CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     existing = _backup_and_load(CLAUDE_SETTINGS_PATH)
     merged = _merge_claude_settings(existing, snippet)
+    if skills_dir:
+        merged = _merge_claude_skills_dirs(merged, str(skills_dir))
 
     if dry_run:
         print(f"\n[claude] [DRY-RUN] Would write to {CLAUDE_SETTINGS_PATH}:")
@@ -204,6 +258,8 @@ def _install_for_claude(hooks_dir: Path, auto: bool, dry_run: bool) -> None:
     CLAUDE_SETTINGS_PATH.write_text(json.dumps(merged, indent=2))
     print(f"\n[claude] Wrote hooks → {CLAUDE_SETTINGS_PATH}")
     print("[claude] (mycelium-owned entries replaced; other hooks preserved.)")
+    if skills_dir:
+        print(f"[claude] skillsDirectories includes: {skills_dir}")
 
 
 def _install_for_cursor(hooks_dir: Path, auto: bool, dry_run: bool) -> None:
@@ -374,9 +430,12 @@ def cmd_install(args: list[str]) -> None:
         else:
             print(f"  WARNING: {src} not found in package")
 
+    skills_count = _deploy_skills(SKILLS_DIR, DEPLOYED_MYCELIUM_SKILLS_DIR)
+    skills_arg = DEPLOYED_MYCELIUM_SKILLS_DIR if skills_count > 0 else None
+
     print(f"\nTarget clients: {', '.join(sorted(clients))}")
     if "claude" in clients:
-        _install_for_claude(hooks_out, auto, dry_run)
+        _install_for_claude(hooks_out, skills_arg, auto, dry_run)
     if "cursor" in clients:
         _install_for_cursor(hooks_out, auto, dry_run)
 

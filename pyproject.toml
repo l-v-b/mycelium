@@ -38,4 +38,7 @@ mycelium = "mycelium.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mycelium"]
-artifacts = ["mycelium/hooks/*.py"]
+artifacts = [
+    "mycelium/hooks/*.py",
+    "mycelium/skills/**/*",
+]
