@@ -75,6 +75,37 @@ def _init() -> None:
         ["kind"],
     )
 
+    # Federation metrics (PR-C).
+    _metrics["read_total"] = Counter(
+        "mycelium_read_total",
+        "Federation hits per source",
+        ["source"],
+    )
+    _metrics["read_latency_ms"] = Histogram(
+        "mycelium_read_latency_ms",
+        "Per-source latency in federated context() fanout",
+        ["source"],
+    )
+    _metrics["read_error_total"] = Counter(
+        "mycelium_read_error_total",
+        "Federation per-source errors",
+        ["source"],
+    )
+    _metrics["response_size_bytes"] = Histogram(
+        "mycelium_response_size_bytes",
+        "Federated response payload size (bytes)",
+    )
+    _metrics["response_size_tokens_estimate"] = Histogram(
+        "mycelium_response_size_tokens_estimate",
+        "Federated response token estimate. APPROXIMATION: bytes/4. "
+        "Real tokenization is model-specific; this metric tracks payload "
+        "shape, not exact billing.",
+    )
+    _metrics["response_truncated_total"] = Counter(
+        "mycelium_response_truncated_total",
+        "Federated responses whose snippets were truncated to fit the cap",
+    )
+
 
 def incr(name: str, labels: dict | None = None, value: float = 1.0) -> None:
     """Increment a counter. No-op if prometheus_client not installed.

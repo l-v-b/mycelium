@@ -70,9 +70,18 @@ mcp = FastMCP(
         "search() with a precise topic. Search broadly — do not restrict to a specific wing unless you "
         "have already explored the taxonomy.\n"
         "\n"
+        "FEDERATED context (when external sources are configured): use context_federated(query, sources=...) "
+        "to fan out across mycelium + external sources (gitlab, backstage, rain-docs, zabbix as they land) "
+        "with rank fusion. Pass sources=['all'] to hit every registered adapter; pass a specific list to "
+        "scope (e.g. sources=['mycelium-notes', 'gitlab-config']). Returns ranked results from all sources "
+        "in one call; synthesize across them yourself.\n"
+        "\n"
         "CAPTURE:\n"
         "- file() for verbatim content (user paste, log output, transcript).\n"
-        "- write_note() for settled conclusions and decisions.\n"
+        "- write_note(title, content, tags, intent) for settled conclusions and decisions. "
+        "INTENT IS REQUIRED (v2.0.0+) — pass a non-empty string explaining WHY this note is being written "
+        "(e.g. 'capturing the deployment decision from today's planning meeting'). It's stamped as "
+        "source_intent in frontmatter so future searches see why the note exists.\n"
         "- Before filing into an unfamiliar wing/room, call get_taxonomy() once to see existing names — "
         "avoid fragmenting with near-duplicates (e.g. 'decisions' vs 'decision').\n"
         "\n"
@@ -86,6 +95,17 @@ mcp = FastMCP(
         "Drawers are the source of truth for raw content; notes are authoritative for curated decisions."
     ),
 )
+
+
+# Load federation adapters from the user's allowlist. Each adapter registers
+# itself via register() at import time; the federated context_federated()
+# tool reads from that registry.
+try:
+    from mycelium.federation import load_adapters as _load_federation_adapters
+    _load_federation_adapters()
+except Exception:
+    # Don't let a bad adapter import crash the server startup.
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +516,7 @@ def check_duplicate(
 def write_note(
     title: str,
     content: str,
+    intent: str,
     tags: Optional[list[str]] = None,
     source_memories: Optional[list[str]] = None,
     status: Optional[str] = None,
@@ -512,6 +533,12 @@ def write_note(
     Args:
         title: Short descriptive title (used as filename slug).
         content: Full Markdown. Use ## Context, ## Decision/Conclusion, ## Rationale.
+        intent: REQUIRED (v2.0.0+). Non-empty string explaining WHY this note
+            is being written — provenance for future search. Examples:
+              "Capturing the deployment decision from today's planning meeting"
+              "Documenting the rebase procedure after this morning's incident"
+              "Locking in the API auth choice we landed on"
+            Stamped into frontmatter as `source_intent`.
         tags: Topic tags (e.g. ["infra", "decision"]).
         source_memories: Drawer IDs this note was derived from.
         status: Optional. Set when this note represents tracked work.
@@ -528,7 +555,18 @@ def write_note(
     In team mode (MYCELIUM_DEPLOYMENT_MODE=team), the disk write happens
     synchronously and a signal is enqueued to Redis; the writer worker
     commits to ChromaDB asynchronously (~minutes lag worst-case).
+
+    Raises:
+        ValueError: if `intent` is empty or whitespace-only.
     """
+    if not intent or not intent.strip():
+        raise ValueError(
+            "`intent` is required for write_note. Pass a non-empty string "
+            "explaining why this note is being written (it gets stamped as "
+            "source_intent in the note's frontmatter for future provenance). "
+            "Use file() instead if you have no synthesis reasoning to attach."
+        )
+
     from mycelium.config import DEPLOYMENT_MODE
 
     def _dedupe_query(q: str, n: int) -> str:
@@ -538,7 +576,7 @@ def write_note(
         from mycelium.write_path.queued import write_note_queued
         return write_note_queued(
             title, content, tags, source_memories, status,
-            intent=None,
+            intent=intent,
             query_notes_fn=_dedupe_query,
         )
 
@@ -553,11 +591,59 @@ def write_note(
 
     return write_note_direct(
         title, content, tags, source_memories, status,
-        intent=None,  # required in v2.0.0; optional today
+        intent=intent,
         query_notes_fn=_dedupe_query,
         upsert_note_fn=_upsert_note,
         load_note_fn=_vault_load_note,
     )
+
+
+@mcp.tool()
+def context_federated(
+    query: str,
+    sources: Optional[list[str]] = None,
+    k_per_source: int = 5,
+    n_results: int = 20,
+) -> str:
+    """Federated context across all configured sources.
+
+    Fans out the query in parallel to each registered adapter (mycelium
+    notes/drawers/links + any external adapters configured), rank-fuses
+    results with per-source bias weights, and returns the top-N.
+
+    Returns JSON with: query, results (each: source, rank, effective_rank,
+    id, title, snippet, metadata), source_diagnostics (per-source hits +
+    latency), truncated (how many snippets were shortened to fit the cap).
+
+    Args:
+        query: natural-language query
+        sources: list of adapter names. None or ["all"] = every registered
+            adapter. Specific list scopes the fanout
+            (e.g. ["mycelium-notes", "gitlab-config"]).
+        k_per_source: top-K each source returns BEFORE the merge.
+        n_results: final cap on the merged result list.
+
+    Cross-source synthesis is YOUR job — this tool returns ranked candidates,
+    not a synthesized answer. The mycelium-context tool is the mycelium-only
+    equivalent; use this when you want to pull from external sources too.
+    """
+    import asyncio
+    from mycelium.federation.fanout import federated_context
+
+    result = asyncio.run(federated_context(
+        query=query,
+        sources_filter=sources,
+        k_per_source=k_per_source,
+        n_results=n_results,
+    ))
+    payload = json.dumps(result, indent=2)
+    # Response-size observability.
+    metrics_dict_size = len(payload.encode("utf-8"))
+    from mycelium import metrics as _metrics
+    from mycelium.federation.budgets import estimate_tokens
+    _metrics.observe("response_size_bytes", float(metrics_dict_size))
+    _metrics.observe("response_size_tokens_estimate", float(estimate_tokens(metrics_dict_size)))
+    return payload
 
 
 @mcp.tool()
