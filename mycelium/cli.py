@@ -17,6 +17,9 @@ DEPLOY_DIR = Path.home() / ".mycelium"
 # the client's skillsDirectories makes the skills discoverable.
 DEPLOYED_MYCELIUM_SKILLS_DIR = DEPLOY_DIR / "skills" / "mycelium"
 
+# Where the personal-skills repo is cloned by `mycelium skills sync`.
+DEPLOYED_PERSONAL_SKILLS_DIR = DEPLOY_DIR / "skills" / "personal"
+
 CONFIG_PATH          = DEPLOY_DIR / "config.json"
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 CLAUDE_MCP_PATH      = Path.home() / ".claude.json"
@@ -229,10 +232,10 @@ def _merge_claude_skills_dirs(existing: dict, path: str) -> dict:
     return out
 
 
-def _install_for_claude(hooks_dir: Path, skills_dir: Path | None, auto: bool, dry_run: bool) -> None:
+def _install_for_claude(hooks_dir: Path, skills_dirs: list[Path], auto: bool, dry_run: bool) -> None:
     snippet = _claude_hooks_snippet(hooks_dir)
     skills_snippet = (
-        {"skillsDirectories": [str(skills_dir)]} if skills_dir else {}
+        {"skillsDirectories": [str(d) for d in skills_dirs]} if skills_dirs else {}
     )
 
     if not auto:
@@ -247,8 +250,8 @@ def _install_for_claude(hooks_dir: Path, skills_dir: Path | None, auto: bool, dr
     CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     existing = _backup_and_load(CLAUDE_SETTINGS_PATH)
     merged = _merge_claude_settings(existing, snippet)
-    if skills_dir:
-        merged = _merge_claude_skills_dirs(merged, str(skills_dir))
+    for d in skills_dirs:
+        merged = _merge_claude_skills_dirs(merged, str(d))
 
     if dry_run:
         print(f"\n[claude] [DRY-RUN] Would write to {CLAUDE_SETTINGS_PATH}:")
@@ -258,8 +261,8 @@ def _install_for_claude(hooks_dir: Path, skills_dir: Path | None, auto: bool, dr
     CLAUDE_SETTINGS_PATH.write_text(json.dumps(merged, indent=2))
     print(f"\n[claude] Wrote hooks → {CLAUDE_SETTINGS_PATH}")
     print("[claude] (mycelium-owned entries replaced; other hooks preserved.)")
-    if skills_dir:
-        print(f"[claude] skillsDirectories includes: {skills_dir}")
+    for d in skills_dirs:
+        print(f"[claude] skillsDirectories includes: {d}")
 
 
 def _install_for_cursor(hooks_dir: Path, auto: bool, dry_run: bool) -> None:
@@ -411,7 +414,17 @@ def cmd_install(args: list[str]) -> None:
     dry_run        = "--dry-run"        in args
     add_mcp_server = "--add-mcp-server" in args
     mcp_name       = _parse_named_flag(args, "mcp-name") or DEFAULT_MCP_NAME
+    skills_repo    = _parse_named_flag(args, "skills-repo")
     clients        = _resolve_clients(_parse_clients_flag(args))
+
+    # If --skills-repo URL was passed, persist into ~/.mycelium/config.json
+    # so future `mycelium skills sync` calls find it automatically.
+    if skills_repo is not None:
+        DEPLOY_DIR.mkdir(parents=True, exist_ok=True)
+        cfg = _read_config()
+        cfg["personal_skills_repo"] = skills_repo
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+        print(f"  Persisted personal_skills_repo={skills_repo} → {CONFIG_PATH}")
 
     if not clients:
         print("ERROR: No clients to install for. Pass --clients claude,cursor", file=sys.stderr)
@@ -431,11 +444,17 @@ def cmd_install(args: list[str]) -> None:
             print(f"  WARNING: {src} not found in package")
 
     skills_count = _deploy_skills(SKILLS_DIR, DEPLOYED_MYCELIUM_SKILLS_DIR)
-    skills_arg = DEPLOYED_MYCELIUM_SKILLS_DIR if skills_count > 0 else None
+    skills_dirs: list[Path] = []
+    if skills_count > 0:
+        skills_dirs.append(DEPLOYED_MYCELIUM_SKILLS_DIR)
+    # If `mycelium skills sync` has populated the personal-skills clone,
+    # include it in skillsDirectories too.
+    if (DEPLOYED_PERSONAL_SKILLS_DIR / ".git").is_dir():
+        skills_dirs.append(DEPLOYED_PERSONAL_SKILLS_DIR)
 
     print(f"\nTarget clients: {', '.join(sorted(clients))}")
     if "claude" in clients:
-        _install_for_claude(hooks_out, skills_arg, auto, dry_run)
+        _install_for_claude(hooks_out, skills_dirs, auto, dry_run)
     if "cursor" in clients:
         _install_for_cursor(hooks_out, auto, dry_run)
 
@@ -455,6 +474,75 @@ def cmd_install(args: list[str]) -> None:
         if "cursor" in clients:
             print("\n[cursor/mcp] --add-mcp-server: Cursor MCP config not yet supported. "
                   "Edit ~/.cursor/mcp.json manually with the entry shown above.")
+
+
+def cmd_skills(args: list[str]) -> None:
+    """Dispatch for `mycelium skills <subcommand>`.
+
+    Subcommands:
+      sync   — clone or pull the personal-skills repo (see cmd_skills_sync)
+    """
+    if not args or args[0] in ("-h", "--help"):
+        print("Usage: mycelium skills <subcommand> [args]")
+        print("\nSubcommands:")
+        print("  sync     Clone/pull the personal-skills repo to ~/.mycelium/skills/personal/")
+        print("           Flags: --repo URL (override config; does not persist)")
+        return
+    sub, rest = args[0], args[1:]
+    if sub == "sync":
+        return cmd_skills_sync(rest)
+    print(f"Unknown skills subcommand: {sub!r}", file=sys.stderr)
+    sys.exit(1)
+
+
+def cmd_skills_sync(args: list[str]) -> None:
+    """Clone or pull the personal-skills repo into ~/.mycelium/skills/personal/.
+
+    Usage:
+      mycelium skills sync [--repo URL]
+
+    Reads `personal_skills_repo` from ~/.mycelium/config.json. Override
+    for one-shot use with --repo URL (does NOT update config.json — use
+    `mycelium install --skills-repo URL` to persist the URL).
+
+    First run: `git clone <URL> ~/.mycelium/skills/personal/`.
+    Subsequent runs: `git -C ... pull --ff-only`.
+
+    After syncing, run `mycelium install --auto-hooks` to ensure the
+    skills directory is in `~/.claude/settings.json` skillsDirectories.
+    """
+    cfg = _read_config()
+    repo = _parse_named_flag(args, "repo") or cfg.get("personal_skills_repo", "")
+    if not repo:
+        print("ERROR: No personal-skills repo configured.", file=sys.stderr)
+        print("       Run `mycelium install --skills-repo URL` to persist a URL", file=sys.stderr)
+        print("       or pass `--repo URL` for one-shot sync.", file=sys.stderr)
+        sys.exit(1)
+
+    DEPLOYED_PERSONAL_SKILLS_DIR.parent.mkdir(parents=True, exist_ok=True)
+    if (DEPLOYED_PERSONAL_SKILLS_DIR / ".git").is_dir():
+        print(f"Pulling latest into {DEPLOYED_PERSONAL_SKILLS_DIR}")
+        rc = subprocess.run(
+            ["git", "-C", str(DEPLOYED_PERSONAL_SKILLS_DIR), "pull", "--ff-only"],
+            check=False,
+        ).returncode
+    else:
+        print(f"Cloning {repo} → {DEPLOYED_PERSONAL_SKILLS_DIR}")
+        rc = subprocess.run(
+            ["git", "clone", repo, str(DEPLOYED_PERSONAL_SKILLS_DIR)],
+            check=False,
+        ).returncode
+
+    if rc != 0:
+        print(f"\nERROR: git operation failed (exit {rc}).", file=sys.stderr)
+        sys.exit(rc)
+
+    skill_count = sum(
+        1 for p in DEPLOYED_PERSONAL_SKILLS_DIR.iterdir()
+        if p.is_dir() and p.name != ".git" and (p / "SKILL.md").exists()
+    ) if DEPLOYED_PERSONAL_SKILLS_DIR.is_dir() else 0
+    print(f"\nDone. {skill_count} skill(s) under {DEPLOYED_PERSONAL_SKILLS_DIR}.")
+    print(f"Run `mycelium install --auto-hooks` to ensure this path is in skillsDirectories.")
 
 
 def cmd_init(args: list[str]) -> None:
@@ -609,7 +697,10 @@ def main() -> None:
         print("                       Flags: --clients claude,cursor (default: auto-detect)")
         print("                              --auto-hooks (write directly, append-and-dedup-by-marker)")
         print("                              --add-mcp-server [--mcp-name NAME]")
+        print("                              --skills-repo URL (persist personal_skills_repo to config)")
         print("                              --dry-run    (print the would-be config, no writes)")
+        print("  skills sync          Clone/pull personal-skills repo to ~/.mycelium/skills/personal/")
+        print("                       Flags: --repo URL (one-shot override)")
         print("  verify               Health check: imports, vault, index counts")
         print("  reindex              Sync ChromaDB (notes, drawers, links) with vault/ markdown files")
         print("  regenerate-closets   Rebuild closet topical-cluster index from current drawers")
@@ -619,6 +710,7 @@ def main() -> None:
     dispatch = {
         "init":                cmd_init,
         "install":             cmd_install,
+        "skills":              cmd_skills,
         "verify":              cmd_verify,
         "reindex":             cmd_reindex,
         "regenerate-closets":  cmd_regenerate_closets,
