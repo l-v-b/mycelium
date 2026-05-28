@@ -27,7 +27,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-CHECKPOINT_INTERVAL = 30
+CHECKPOINT_INTERVAL = 60
 STATE_DIR = Path.home() / ".mycelium" / "state"
 LOG_PATH  = Path.home() / ".mycelium" / "hook.log"
 
