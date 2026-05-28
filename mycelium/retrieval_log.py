@@ -51,6 +51,36 @@ def suppress_nested():
         _suppress.reset(token)
 
 
+def parallel_fanout(*calls):
+    """Run N zero-arg callables in parallel, with suppress_nested active
+    in each worker thread.
+
+    Used by context() and context_titles() to fan out their three sub-
+    fetches (notes / drawers / links) across a ThreadPoolExecutor instead
+    of running them sequentially. Each Loki/chroma call is independent;
+    parallelism cuts wall-clock latency by ~2-3× when the chroma queries
+    are the dominant cost.
+
+    Each `call` is a zero-arg callable (lambda or functools.partial).
+    Returns results in the same order as calls.
+
+    Threads don't auto-inherit the caller's ContextVar context, so each
+    worker explicitly sets `_suppress = True` before running its callable.
+    """
+    import concurrent.futures
+
+    def _wrapped(call):
+        token = _suppress.set(True)
+        try:
+            return call()
+        finally:
+            _suppress.reset(token)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(calls)) as ex:
+        futures = [ex.submit(_wrapped, c) for c in calls]
+        return tuple(f.result() for f in futures)
+
+
 # Drawer snippet length in the log — short enough to keep records compact,
 # long enough that a human reading the log gets the gist of the match.
 _SNIPPET_CHARS = 100
