@@ -65,19 +65,40 @@ def _file_size(path_str: str | None) -> int:
         return 0
 
 
-def _wing_distribution() -> dict[str, int]:
-    if not DRAWERS_DIR.exists():
-        return {}
-    counts: dict[str, int] = {}
-    for wing_dir in DRAWERS_DIR.iterdir():
-        if not wing_dir.is_dir():
-            continue
-        n = 0
-        for room_dir in wing_dir.iterdir():
-            if room_dir.is_dir():
-                n += sum(1 for f in room_dir.iterdir() if f.suffix == ".md")
-        counts[wing_dir.name] = n
-    return counts
+def _drawer_taxonomy() -> tuple[dict[str, int], int]:
+    """Pull (wing→count, total_unique_drawers) from chroma metadata.
+
+    Mirrors server.get_taxonomy: chunked drawers (`drawer_xxx__c0/__c1/...`)
+    are deduped to the canonical drawer_id. Authoritative because drawers
+    are stored flat on disk with wing in frontmatter — chroma metadata is
+    the cheapest source for the wing histogram.
+    """
+    try:
+        col = drawers_collection()
+        total_chunks = col.count()
+        if total_chunks == 0:
+            return {}, 0
+
+        counts: dict[str, int] = {}
+        seen: set[str] = set()
+        batch = 500
+        offset = 0
+        while offset < total_chunks:
+            page = col.get(include=["metadatas"], limit=batch, offset=offset)
+            ids = page.get("ids") or []
+            metas = page.get("metadatas") or []
+            for did, m in zip(ids, metas):
+                canonical = did.split("__c", 1)[0]
+                if canonical in seen:
+                    continue
+                seen.add(canonical)
+                wing = (m or {}).get("wing", "unknown")
+                counts[wing] = counts.get(wing, 0) + 1
+            offset += batch
+        return counts, len(seen)
+    except Exception as e:
+        _logger.warning("drawer taxonomy failed: %s", e)
+        return {}, -1
 
 
 def _note_staleness_and_status() -> tuple[dict[str, int], dict[str, int]]:
@@ -213,19 +234,17 @@ def collect_snapshot() -> dict[str, Any]:
     links_indexed   = _safe_count(links_collection)
 
     n_notes   = _note_files_count()
-    n_drawers_disk = sum(_wing_distribution().values())
+    wing_dist, n_drawers_canonical = _drawer_taxonomy()
     n_links   = _link_files_count()
     n_diary   = _diary_count()
     n_concepts = _concept_count()
-
-    wing_dist = _wing_distribution()
     staleness, status_dist = _note_staleness_and_status()
 
     snapshot: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "counts": {
             "notes": n_notes,
-            "drawers": n_drawers_disk,
+            "drawers": n_drawers_canonical,
             "links": n_links,
             "diary_entries": n_diary,
             "concepts": n_concepts,
@@ -240,7 +259,7 @@ def collect_snapshot() -> dict[str, Any]:
         "note_status_distribution": status_dist,
         "linkage_density": {
             "links_per_note": round(n_links / n_notes, 3) if n_notes else 0.0,
-            "links_per_drawer": round(n_links / n_drawers_disk, 5) if n_drawers_disk else 0.0,
+            "links_per_drawer": round(n_links / n_drawers_canonical, 5) if n_drawers_canonical else 0.0,
         },
         "log_sizes_bytes": {
             "retrieval_log": _file_size(RETRIEVAL_LOG_PATH),
