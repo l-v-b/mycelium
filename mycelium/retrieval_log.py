@@ -150,6 +150,11 @@ def log_retrieval(
         # is free at emission time and trivial to query).
         "n_wings_returned": len(wings_returned),
         "cross_wing": len(wings_returned) > 1,
+        # String mirror of wings_returned for LogQL: Loki's `| json` parser
+        # extracts scalars but drops arrays, so the array form isn't
+        # queryable. Joining with "+" gives a single label value like
+        # "ipcore+systems" that powers the wing-co-occurrence barchart.
+        "wings_returned_str": "+".join(wings_returned),
         "wings_returned": wings_returned,
         "returned": returned,
     }
