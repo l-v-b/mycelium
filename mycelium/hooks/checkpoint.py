@@ -163,12 +163,22 @@ def main() -> None:
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     marker = STATE_DIR / f"{session_id}_last_checkpoint"
+    # Fall back to pre-merge marker names (verbatim_stop.py wrote
+    # _verbatim_last_save; stop.py wrote _last_note_review) so a session
+    # that started before the checkpoint merge doesn't see its entire
+    # transcript as "since last checkpoint" on the first new-hook fire.
+    # max() picks the most recent saved point across any markers present.
+    legacy_markers = (
+        STATE_DIR / f"{session_id}_verbatim_last_save",
+        STATE_DIR / f"{session_id}_last_note_review",
+    )
     last = 0
-    if marker.exists():
-        try:
-            last = int(marker.read_text().strip())
-        except (ValueError, OSError):
-            last = 0
+    for path in (marker, *legacy_markers):
+        if path.is_file():
+            try:
+                last = max(last, int(path.read_text().strip()))
+            except (ValueError, OSError):
+                pass
 
     since = count - last
     _log(f"session={session_id} count={count} last={last} since={since}")
