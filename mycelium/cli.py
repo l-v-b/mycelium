@@ -56,12 +56,10 @@ def _claude_hooks_snippet(hooks_dir: Path) -> dict:
             {"type": "command", "command": f"python3 {hooks_dir}/userpromptsubmit.py --harness claude-code || true"},
         ]}],
         "Stop": [{"matcher": "", "hooks": [
-            {"type": "command", "command": f"python3 {hooks_dir}/verbatim_stop.py --harness claude-code || true"},
-            {"type": "command", "command": f"python3 {hooks_dir}/stop.py --harness claude-code || true"},
+            {"type": "command", "command": f"python3 {hooks_dir}/checkpoint.py --harness claude-code || true"},
         ]}],
         "PreCompact": [{"matcher": "", "hooks": [
-            {"type": "command", "command": f"python3 {hooks_dir}/verbatim_stop.py --harness claude-code || true"},
-            {"type": "command", "command": f"python3 {hooks_dir}/stop.py --harness claude-code || true"},
+            {"type": "command", "command": f"python3 {hooks_dir}/checkpoint.py --harness claude-code || true"},
         ]}],
     }
 
@@ -83,8 +81,7 @@ def _cursor_hooks_snippet(hooks_dir: Path) -> dict:
             {"command": f"python3 {hooks_dir}/userpromptsubmit.py --harness cursor || true"},
         ],
         "stop": [
-            {"command": f"python3 {hooks_dir}/verbatim_stop.py --harness cursor || true"},
-            {"command": f"python3 {hooks_dir}/stop.py --harness cursor || true"},
+            {"command": f"python3 {hooks_dir}/checkpoint.py --harness cursor || true"},
         ],
     }
 
@@ -452,7 +449,7 @@ def cmd_install(args: list[str]) -> None:
     hooks_out = DEPLOY_DIR / "hooks"
     if not dry_run:
         hooks_out.mkdir(exist_ok=True)
-    for hook in ("userpromptsubmit.py", "stop.py", "verbatim_stop.py"):
+    for hook in ("userpromptsubmit.py", "checkpoint.py"):
         src = HOOKS_DIR / hook
         dst = hooks_out / hook
         if src.exists():
