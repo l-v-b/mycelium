@@ -145,6 +145,11 @@ def log_retrieval(
         "n_returned": len(returned),
         "n_returned_by_source": n_by_source,
         "empty_result": len(returned) == 0,
+        # Scalar mirror of len(wings_returned) for cheap LogQL/Grafana
+        # aggregation (counting array length in LogQL is hairy; scalar
+        # is free at emission time and trivial to query).
+        "n_wings_returned": len(wings_returned),
+        "cross_wing": len(wings_returned) > 1,
         "wings_returned": wings_returned,
         "returned": returned,
     }
