@@ -258,7 +258,10 @@ def _dedup_and_format(titles: dict, surfaced: dict) -> tuple[str, dict]:
         # Human-readable summaries for hook.log — titles for notes,
         # wing/room for drawers, source--rel-->target for links.
         "note_titles":   [n.get("title", "Untitled") for n in new_notes],
-        "drawer_labels": [f"{d.get('wing','?')}/{d.get('room','?')}" for d in new_drawers],
+        "drawer_labels": [
+            f"{d.get('wing','?')}/{d.get('room','?')} — {d.get('snippet','')[:70]}"
+            for d in new_drawers
+        ],
         "link_labels":   [
             f"{l.get('source',{}).get('label','?')} --[{l.get('relation_type','?')}]--> {l.get('target',{}).get('label','?')}"
             for l in new_links
