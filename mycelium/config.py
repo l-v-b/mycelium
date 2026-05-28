@@ -117,3 +117,11 @@ SOURCE_BIAS_LINK   = float(os.environ.get("MYCELIUM_BIAS_LINK",    "0.10"))
 EXTERNAL_SOURCE_BIASES: dict[str, float] = {
     k: float(v) for k, v in (_user_cfg.get("external_source_biases") or {}).items()
 }
+
+# Retrieval log — JSONL of every read-path tool call (cross-wing retrieval
+# baseline for the scope-aware-retrieval / user-poisoning work; see
+# note_86ea3fb995350faa). Set to empty string to disable.
+RETRIEVAL_LOG_PATH = os.environ.get(
+    "MYCELIUM_RETRIEVAL_LOG",
+    str(DATA_DIR / "logs" / "retrieval.jsonl"),
+)

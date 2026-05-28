@@ -30,6 +30,7 @@ from mycelium.config import (
     SOURCE_BIAS_NOTE,
     VAULT_DIR,
 )
+from mycelium.retrieval_log import log_retrieval, suppress_nested
 from mycelium.search import search_drawers
 from mycelium.vault import (
     chunk_content as _chunk_content,
@@ -208,14 +209,31 @@ def context(
         links at similar raw distance). Includes `_degraded_to` when
         auto-degradation was applied to the bulk per-source lists.
     """
-    notes_result  = json.loads(query_notes(query, n_notes))
-    notes         = notes_result.get("notes", [])
+    with suppress_nested():
+        notes_result  = json.loads(query_notes(query, n_notes))
+        notes         = notes_result.get("notes", [])
 
-    drawer_result = search_drawers(query, n_results=n_drawers, max_distance=max_distance)
-    drawers       = drawer_result.get("results", [])
+        drawer_result = search_drawers(query, n_results=n_drawers, max_distance=max_distance)
+        drawers       = drawer_result.get("results", [])
 
-    links_result  = json.loads(find_links(query, n_links))
-    links         = links_result.get("links", [])
+        links_result  = json.loads(find_links(query, n_links))
+        links         = links_result.get("links", [])
+
+    log_retrieval(
+        tool="context",
+        query=query,
+        params={
+            "n_notes": n_notes,
+            "n_drawers": n_drawers,
+            "n_links": n_links,
+            "max_distance": max_distance,
+            "expand_links": expand_links,
+            "mode": mode,
+        },
+        notes=notes,
+        drawers=drawers,
+        links=links,
+    )
 
     result: dict = {"query": query, "notes": notes, "memories": drawers, "links": links}
 
@@ -341,10 +359,19 @@ def search(
     Returns:
         JSON with "results" list. Each result has text, wing, room, drawer_id, similarity.
     """
-    return json.dumps(
-        search_drawers(query, wing=wing, room=room, n_results=n_results, max_distance=max_distance),
-        indent=2,
+    payload = search_drawers(query, wing=wing, room=room, n_results=n_results, max_distance=max_distance)
+    log_retrieval(
+        tool="search",
+        query=query,
+        params={
+            "n_results": n_results,
+            "max_distance": max_distance,
+            "wing": wing,
+            "room": room,
+        },
+        drawers=payload.get("results", []),
     )
+    return json.dumps(payload, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +735,13 @@ def query_notes(query: str, n_results: int = 10) -> str:
             "source_memories": json.loads(meta.get("source_memories", "[]")),
         })
 
+    log_retrieval(
+        tool="query_notes",
+        query=query,
+        params={"n_results": n_results},
+        notes=notes,
+    )
+
     return json.dumps({"notes": notes, "total_indexed": count}, indent=2)
 
 
@@ -746,40 +780,55 @@ def context_titles(
         Drawer `snippet` is first 100 chars of content (newlines flattened),
         with the drawer id used as a fallback when the body is empty.
     """
-    # Notes: reuse query_notes but strip the full content field.
-    notes_result = json.loads(query_notes(query, n_notes))
-    notes_lite = [
-        {
-            "note_id":  n.get("note_id"),
-            "title":    n.get("title"),
-            "tags":     n.get("tags", []),
-            "distance": n.get("distance"),
-            "filepath": n.get("filepath"),
-        }
-        for n in notes_result.get("notes", [])
-    ]
+    with suppress_nested():
+        # Notes: reuse query_notes but strip the full content field.
+        notes_result = json.loads(query_notes(query, n_notes))
+        notes_lite = [
+            {
+                "note_id":  n.get("note_id"),
+                "title":    n.get("title"),
+                "tags":     n.get("tags", []),
+                "distance": n.get("distance"),
+                "filepath": n.get("filepath"),
+            }
+            for n in notes_result.get("notes", [])
+        ]
 
-    # Drawers: search but only keep snippet (no full text).
-    drawer_result = search_drawers(
-        query, n_results=n_drawers, max_distance=max_distance,
+        # Drawers: search but only keep snippet (no full text).
+        drawer_result = search_drawers(
+            query, n_results=n_drawers, max_distance=max_distance,
+        )
+        drawers_lite = []
+        for d in drawer_result.get("results", []):
+            did = d.get("drawer_id", "")
+            snippet = (d.get("text") or "").strip().replace("\n", " ")[:100]
+            if not snippet:
+                # Fall back to the drawer id when body is empty.
+                snippet = did
+            drawers_lite.append({
+                "drawer_id": did,
+                "wing":      d.get("wing"),
+                "room":      d.get("room"),
+                "snippet":   snippet,
+                "distance":  d.get("distance"),
+            })
+
+        # Links: find_links already returns metadata only, no content.
+        links_result = json.loads(find_links(query, n_links))
+
+    log_retrieval(
+        tool="context_titles",
+        query=query,
+        params={
+            "n_notes": n_notes,
+            "n_drawers": n_drawers,
+            "n_links": n_links,
+            "max_distance": max_distance,
+        },
+        notes=notes_lite,
+        drawers=drawers_lite,
+        links=links_result.get("links", []),
     )
-    drawers_lite = []
-    for d in drawer_result.get("results", []):
-        did = d.get("drawer_id", "")
-        snippet = (d.get("text") or "").strip().replace("\n", " ")[:100]
-        if not snippet:
-            # Fall back to the drawer id when body is empty.
-            snippet = did
-        drawers_lite.append({
-            "drawer_id": did,
-            "wing":      d.get("wing"),
-            "room":      d.get("room"),
-            "snippet":   snippet,
-            "distance":  d.get("distance"),
-        })
-
-    # Links: find_links already returns metadata only, no content.
-    links_result = json.loads(find_links(query, n_links))
 
     return json.dumps({
         "query":   query,
@@ -945,6 +994,13 @@ def find_links(
             "distance":      round(dist, 4),
             "ended_at":      meta.get("ended_at", "") or None,
         })
+
+    log_retrieval(
+        tool="find_links",
+        query=query,
+        params={"n_results": n_results, "include_historical": include_historical},
+        links=links,
+    )
 
     return json.dumps({"links": links, "total_indexed": count}, indent=2)
 
