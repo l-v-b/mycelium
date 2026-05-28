@@ -2,10 +2,12 @@
 
 Baseline data for the scope-aware-retrieval / user-poisoning work
 (strategy note: note_86ea3fb995350faa). Captures, for every call to a
-retrieval MCP tool: the query, the tool's params, and the wings/rooms
-of every returned drawer. Lets us answer "how often does retrieval
-cross wings, today, before any scope-aware retrieval is implemented"
-without changing how the agent sees results.
+retrieval MCP tool: the query, the tool's params, latency, the
+caller (agent vs hook), and the wings/rooms/titles of every returned
+entity. Lets us answer "how often does retrieval cross wings, today,
+before any scope-aware retrieval is implemented" and "is the
+UserPromptSubmit hook surfacing relevant titles" without changing
+how the agent sees results.
 
 Designed to be cheap and non-blocking — write failures are swallowed
 with a warning, never raised to the caller. Disabled by setting
@@ -49,10 +51,21 @@ def suppress_nested():
         _suppress.reset(token)
 
 
+# Drawer snippet length in the log — short enough to keep records compact,
+# long enough that a human reading the log gets the gist of the match.
+_SNIPPET_CHARS = 100
+
+
+def _drawer_snippet(d: dict[str, Any]) -> str:
+    raw = d.get("text") or d.get("snippet") or ""
+    return raw.strip().replace("\n", " ")[:_SNIPPET_CHARS]
+
+
 def _entity_from_note(n: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "note",
         "id": n.get("note_id"),
+        "title": n.get("title"),
         "distance": n.get("distance"),
     }
 
@@ -63,6 +76,7 @@ def _entity_from_drawer(d: dict[str, Any]) -> dict[str, Any]:
         "id": d.get("drawer_id"),
         "wing": d.get("wing"),
         "room": d.get("room"),
+        "snippet": _drawer_snippet(d),
         "distance": d.get("distance"),
     }
 
@@ -74,7 +88,9 @@ def _entity_from_link(l: dict[str, Any]) -> dict[str, Any]:
         "type": "link",
         "id": l.get("link_id"),
         "source_id": src.get("id"),
+        "source_label": src.get("label"),
         "target_id": tgt.get("id"),
+        "target_label": tgt.get("label"),
         "relation_type": l.get("relation_type"),
         "distance": l.get("distance"),
     }
@@ -87,6 +103,8 @@ def log_retrieval(
     notes: Iterable[dict[str, Any]] | None = None,
     drawers: Iterable[dict[str, Any]] | None = None,
     links: Iterable[dict[str, Any]] | None = None,
+    caller: str = "agent",
+    latency_ms: float | None = None,
 ) -> None:
     """Append one JSONL record describing a retrieval call.
 
@@ -98,24 +116,35 @@ def log_retrieval(
     if not RETRIEVAL_LOG_PATH:
         return
 
+    notes_list = list(notes or ())
+    drawers_list = list(drawers or ())
+    links_list = list(links or ())
+
     returned: list[dict[str, Any]] = []
-    if notes:
-        returned.extend(_entity_from_note(n) for n in notes)
-    if drawers:
-        returned.extend(_entity_from_drawer(d) for d in drawers)
-    if links:
-        returned.extend(_entity_from_link(l) for l in links)
+    returned.extend(_entity_from_note(n) for n in notes_list)
+    returned.extend(_entity_from_drawer(d) for d in drawers_list)
+    returned.extend(_entity_from_link(l) for l in links_list)
 
     wings_returned = sorted({
         e["wing"] for e in returned if e.get("type") == "drawer" and e.get("wing")
     })
 
-    record = {
+    n_by_source = {
+        "notes": len(notes_list),
+        "drawers": len(drawers_list),
+        "links": len(links_list),
+    }
+
+    record: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "tool": tool,
+        "caller": caller,
         "query": query,
         "params": params or {},
+        "latency_ms": round(latency_ms, 2) if latency_ms is not None else None,
         "n_returned": len(returned),
+        "n_returned_by_source": n_by_source,
+        "empty_result": len(returned) == 0,
         "wings_returned": wings_returned,
         "returned": returned,
     }

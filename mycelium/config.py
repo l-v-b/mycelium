@@ -125,3 +125,18 @@ RETRIEVAL_LOG_PATH = os.environ.get(
     "MYCELIUM_RETRIEVAL_LOG",
     str(DATA_DIR / "logs" / "retrieval.jsonl"),
 )
+
+# Write log — JSONL of every write-path tool call (KB growth rate, wing
+# distribution, cross-wing links, graph density). Set to empty string to disable.
+WRITE_LOG_PATH = os.environ.get(
+    "MYCELIUM_WRITE_LOG",
+    str(DATA_DIR / "logs" / "writes.jsonl"),
+)
+
+# Health snapshot log — JSONL appended by the periodic health snapshot script
+# (vault counts, wing distribution, index sizes, staleness histogram). Read
+# from this file to build daily dashboards. Set to empty string to disable.
+HEALTH_LOG_PATH = os.environ.get(
+    "MYCELIUM_HEALTH_LOG",
+    str(DATA_DIR / "logs" / "health.jsonl"),
+)

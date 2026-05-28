@@ -200,6 +200,7 @@ def _fetch_titles(
                 "n_drawers":     n_drawers,
                 "n_links":       n_links,
                 "max_distance":  max_distance,
+                "_caller":       "hook",
             },
         },
         "id": 1,
@@ -251,9 +252,17 @@ def _dedup_and_format(titles: dict, surfaced: dict) -> tuple[str, dict]:
     new_links   = [l for l in titles.get("links",   []) if l.get("link_id")   and l["link_id"]   not in seen_links]
 
     just_surfaced = {
-        "note_ids":   [n["note_id"] for n in new_notes],
-        "drawer_ids": [d["drawer_id"] for d in new_drawers],
-        "link_ids":   [l["link_id"] for l in new_links],
+        "note_ids":      [n["note_id"] for n in new_notes],
+        "drawer_ids":    [d["drawer_id"] for d in new_drawers],
+        "link_ids":      [l["link_id"] for l in new_links],
+        # Human-readable summaries for hook.log — titles for notes,
+        # wing/room for drawers, source--rel-->target for links.
+        "note_titles":   [n.get("title", "Untitled") for n in new_notes],
+        "drawer_labels": [f"{d.get('wing','?')}/{d.get('room','?')}" for d in new_drawers],
+        "link_labels":   [
+            f"{l.get('source',{}).get('label','?')} --[{l.get('relation_type','?')}]--> {l.get('target',{}).get('label','?')}"
+            for l in new_links
+        ],
     }
 
     if not new_notes and not new_drawers and not new_links:
@@ -351,6 +360,8 @@ def main() -> None:
         # Always update state with what we surfaced + the new yield reading —
         # even when injection is empty, the act of querying counts (the IDs
         # were already surfaced to the agent at some prior point).
+        # Note: just_surfaced also carries human-readable titles/labels for
+        # logging; those aren't persisted into state, only IDs are.
         merged = {
             "note_ids":      surfaced["note_ids"]   + just_surfaced["note_ids"],
             "drawer_ids":    surfaced["drawer_ids"] + just_surfaced["drawer_ids"],
@@ -374,6 +385,14 @@ def main() -> None:
             f"({len(formatted)} chars)"
             f"{' [widened: ' + str(n_notes_arg) + '/' + str(n_drawers_arg) + '/' + str(n_links_arg) + ' @' + str(round(max_dist_arg, 2)) + ']' if widened else ''}"
         )
+        # Inline the surfaced titles/labels so a tail of hook.log shows
+        # what the agent actually got injected, not just counts.
+        for title in just_surfaced.get("note_titles", []):
+            _log(f"  [note]   {title}")
+        for label in just_surfaced.get("drawer_labels", []):
+            _log(f"  [drawer] {label}")
+        for label in just_surfaced.get("link_labels", []):
+            _log(f"  [link]   {label}")
         _out({
             "hookSpecificOutput": {
                 "hookEventName":     "UserPromptSubmit",

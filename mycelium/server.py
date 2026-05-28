@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
@@ -32,6 +33,7 @@ from mycelium.config import (
 )
 from mycelium.retrieval_log import log_retrieval, suppress_nested
 from mycelium.search import search_drawers
+from mycelium.write_log import log_write
 from mycelium.vault import (
     chunk_content as _chunk_content,
     delete_drawer as _vault_delete_drawer,
@@ -172,6 +174,7 @@ def context(
     max_distance: float = 0.75,
     expand_links: bool = True,
     mode: Literal["auto", "full", "snippet", "titles"] = "auto",
+    _caller: str = "agent",
 ) -> str:
     """Retrieve combined context: curated notes + verbatim drawers + related links.
 
@@ -209,6 +212,7 @@ def context(
         links at similar raw distance). Includes `_degraded_to` when
         auto-degradation was applied to the bulk per-source lists.
     """
+    _t0 = time.perf_counter()
     with suppress_nested():
         notes_result  = json.loads(query_notes(query, n_notes))
         notes         = notes_result.get("notes", [])
@@ -233,6 +237,8 @@ def context(
         notes=notes,
         drawers=drawers,
         links=links,
+        caller=_caller,
+        latency_ms=(time.perf_counter() - _t0) * 1000,
     )
 
     result: dict = {"query": query, "notes": notes, "memories": drawers, "links": links}
@@ -346,6 +352,7 @@ def search(
     max_distance: float = 0.75,
     wing: Optional[str] = None,
     room: Optional[str] = None,
+    _caller: str = "agent",
 ) -> str:
     """Hybrid BM25 + vector search over verbatim drawer captures.
 
@@ -359,6 +366,7 @@ def search(
     Returns:
         JSON with "results" list. Each result has text, wing, room, drawer_id, similarity.
     """
+    _t0 = time.perf_counter()
     payload = search_drawers(query, wing=wing, room=room, n_results=n_results, max_distance=max_distance)
     log_retrieval(
         tool="search",
@@ -370,6 +378,8 @@ def search(
             "room": room,
         },
         drawers=payload.get("results", []),
+        caller=_caller,
+        latency_ms=(time.perf_counter() - _t0) * 1000,
     )
     return json.dumps(payload, indent=2)
 
@@ -412,7 +422,14 @@ def file(
             did = _did_fn(content, wing, room)
             _vault_update_closet_for_drawer(did, wing, room, content)
         except Exception:
-            pass
+            did = None
+        log_write("file", {
+            "drawer_id": did,
+            "wing": wing,
+            "room": room,
+            "size_bytes": len(content.encode("utf-8")),
+            "mode": "team",
+        })
         return result
 
     did, filepath = _vault_write_drawer(content, wing, room)
@@ -421,6 +438,13 @@ def file(
         _vault_update_closet_for_drawer(did, wing, room, content)
     except Exception:
         pass  # closet update is best-effort, never blocks filing
+    log_write("file", {
+        "drawer_id": did,
+        "wing": wing,
+        "room": room,
+        "size_bytes": len(content.encode("utf-8")),
+        "mode": "personal",
+    })
     return f"Filed: {did} → {wing}/{room}"
 
 
@@ -449,6 +473,10 @@ def update_drawer(drawer_id: str, content: str) -> str:
     if not filepath:
         return json.dumps({"error": f"Drawer not found: {drawer_id}"})
     _index_drawer_from_disk(drawer_id)
+    log_write("update_drawer", {
+        "drawer_id": drawer_id,
+        "size_bytes": len(content.encode("utf-8")),
+    })
     return f"Updated: {drawer_id}"
 
 
@@ -465,6 +493,7 @@ def delete_drawer(drawer_id: str) -> str:
         drawers_collection().delete(ids=[drawer_id])
     except Exception:
         pass
+    log_write("delete_drawer", {"drawer_id": drawer_id})
     return f"Deleted: {drawer_id}"
 
 
@@ -599,13 +628,25 @@ def write_note(
     def _dedupe_query(q: str, n: int) -> str:
         return query_notes(q, n_results=n)
 
+    _log_fields = {
+        "note_id": _note_id_fn(_slugify(title)),
+        "title": title,
+        "tags": tags or [],
+        "status": status,
+        "n_source_memories": len(source_memories or []),
+        "intent_length": len(intent or ""),
+        "body_length": len(content.encode("utf-8")),
+    }
+
     if DEPLOYMENT_MODE == "team":
         from mycelium.write_path.queued import write_note_queued
-        return write_note_queued(
+        result = write_note_queued(
             title, content, tags, source_memories, status,
             intent=intent,
             query_notes_fn=_dedupe_query,
         )
+        log_write("write_note", {**_log_fields, "mode": "team"})
+        return result
 
     from mycelium.write_path.direct import write_note_direct
 
@@ -616,13 +657,15 @@ def write_note(
             metadatas=[metadata],
         )
 
-    return write_note_direct(
+    result = write_note_direct(
         title, content, tags, source_memories, status,
         intent=intent,
         query_notes_fn=_dedupe_query,
         upsert_note_fn=_upsert_note,
         load_note_fn=_vault_load_note,
     )
+    log_write("write_note", {**_log_fields, "mode": "personal"})
+    return result
 
 
 @mcp.tool()
@@ -689,11 +732,12 @@ def delete_note(note_id: str) -> str:
         notes_collection().delete(ids=[note_id])
     except Exception:
         pass
+    log_write("delete_note", {"note_id": note_id})
     return f"Deleted: {note_id}"
 
 
 @mcp.tool()
-def query_notes(query: str, n_results: int = 10) -> str:
+def query_notes(query: str, n_results: int = 10, _caller: str = "agent") -> str:
     """Search curated synthesis notes by semantic similarity.
 
     Notes are more authoritative than drawers — they represent settled
@@ -706,40 +750,41 @@ def query_notes(query: str, n_results: int = 10) -> str:
     Returns:
         JSON with "notes" list. Each note includes note_id for query_links traversal.
     """
+    _t0 = time.perf_counter()
     col   = notes_collection()
     count = col.count()
-    if count == 0:
-        return json.dumps({"notes": [], "total_indexed": 0})
+    notes: list[dict] = []
 
-    results = col.query(
-        query_texts=[query],
-        n_results=min(n_results, count),
-        include=["documents", "metadatas", "distances"],
-    )
-
-    notes = []
-    for doc, meta, dist in zip(
-        results["documents"][0],
-        results["metadatas"][0],
-        results["distances"][0],
-    ):
-        slug = meta.get("slug") or _slugify(meta.get("title", ""))
-        notes.append({
-            "note_id":         _note_id_fn(slug),
-            "title":           meta.get("title"),
-            "tags":            json.loads(meta.get("tags", "[]")),
-            "distance":        round(dist, 4),
-            "content":         doc,
-            "filepath":        meta.get("filepath"),
-            "created_at":      meta.get("created_at"),
-            "source_memories": json.loads(meta.get("source_memories", "[]")),
-        })
+    if count > 0:
+        results = col.query(
+            query_texts=[query],
+            n_results=min(n_results, count),
+            include=["documents", "metadatas", "distances"],
+        )
+        for doc, meta, dist in zip(
+            results["documents"][0],
+            results["metadatas"][0],
+            results["distances"][0],
+        ):
+            slug = meta.get("slug") or _slugify(meta.get("title", ""))
+            notes.append({
+                "note_id":         _note_id_fn(slug),
+                "title":           meta.get("title"),
+                "tags":            json.loads(meta.get("tags", "[]")),
+                "distance":        round(dist, 4),
+                "content":         doc,
+                "filepath":        meta.get("filepath"),
+                "created_at":      meta.get("created_at"),
+                "source_memories": json.loads(meta.get("source_memories", "[]")),
+            })
 
     log_retrieval(
         tool="query_notes",
         query=query,
         params={"n_results": n_results},
         notes=notes,
+        caller=_caller,
+        latency_ms=(time.perf_counter() - _t0) * 1000,
     )
 
     return json.dumps({"notes": notes, "total_indexed": count}, indent=2)
@@ -752,6 +797,7 @@ def context_titles(
     n_drawers: int = 60,
     n_links: int = 20,
     max_distance: float = 0.75,
+    _caller: str = "agent",
 ) -> str:
     """Lightweight context for index-style injection — semantic search
     returns titles + minimal metadata, NO full note/drawer content.
@@ -780,6 +826,7 @@ def context_titles(
         Drawer `snippet` is first 100 chars of content (newlines flattened),
         with the drawer id used as a fallback when the body is empty.
     """
+    _t0 = time.perf_counter()
     with suppress_nested():
         # Notes: reuse query_notes but strip the full content field.
         notes_result = json.loads(query_notes(query, n_notes))
@@ -828,6 +875,8 @@ def context_titles(
         notes=notes_lite,
         drawers=drawers_lite,
         links=links_result.get("links", []),
+        caller=_caller,
+        latency_ms=(time.perf_counter() - _t0) * 1000,
     )
 
     return json.dumps({
@@ -908,6 +957,16 @@ def add_link(
             "ended_at":      ended_at,
         }],
     )
+    log_write("add_link", {
+        "link_id": lid,
+        "source_id": source_id,
+        "source_type": source_type,
+        "target_id": target_id,
+        "target_type": target_type,
+        "relation_type": relation_type,
+        "description_length": len(description or ""),
+        "is_historical": bool(ended_at),
+    })
     return f"Link added: {lid}\n{source_label} --[{relation_type}]--> {target_label}"
 
 
@@ -959,6 +1018,7 @@ def find_links(
     query: str,
     n_results: int = 10,
     include_historical: bool = False,
+    _caller: str = "agent",
 ) -> str:
     """Search the knowledge graph by semantic similarity over link descriptions.
 
@@ -970,36 +1030,37 @@ def find_links(
     Returns:
         JSON with "links" list.
     """
+    _t0 = time.perf_counter()
     col   = links_collection()
     count = col.count()
-    if count == 0:
-        return json.dumps({"links": [], "total_indexed": 0})
+    links: list[dict] = []
 
-    where_filter = None if include_historical else {"ended_at": ""}
-    results = col.query(
-        query_texts=[query],
-        n_results=min(n_results, count),
-        where=where_filter,
-        include=["metadatas", "distances"],
-    )
-
-    links = []
-    for meta, dist in zip(results["metadatas"][0], results["distances"][0]):
-        links.append({
-            "link_id":       _link_id_fn(meta["source_id"], meta["relation_type"], meta["target_id"]),
-            "source":        {"id": meta["source_id"], "label": meta["source_label"], "type": meta["source_type"]},
-            "relation_type": meta["relation_type"],
-            "target":        {"id": meta["target_id"], "label": meta["target_label"], "type": meta["target_type"]},
-            "description":   meta["description"],
-            "distance":      round(dist, 4),
-            "ended_at":      meta.get("ended_at", "") or None,
-        })
+    if count > 0:
+        where_filter = None if include_historical else {"ended_at": ""}
+        results = col.query(
+            query_texts=[query],
+            n_results=min(n_results, count),
+            where=where_filter,
+            include=["metadatas", "distances"],
+        )
+        for meta, dist in zip(results["metadatas"][0], results["distances"][0]):
+            links.append({
+                "link_id":       _link_id_fn(meta["source_id"], meta["relation_type"], meta["target_id"]),
+                "source":        {"id": meta["source_id"], "label": meta["source_label"], "type": meta["source_type"]},
+                "relation_type": meta["relation_type"],
+                "target":        {"id": meta["target_id"], "label": meta["target_label"], "type": meta["target_type"]},
+                "description":   meta["description"],
+                "distance":      round(dist, 4),
+                "ended_at":      meta.get("ended_at", "") or None,
+            })
 
     log_retrieval(
         tool="find_links",
         query=query,
         params={"n_results": n_results, "include_historical": include_historical},
         links=links,
+        caller=_caller,
+        latency_ms=(time.perf_counter() - _t0) * 1000,
     )
 
     return json.dumps({"links": links, "total_indexed": count}, indent=2)
@@ -1020,6 +1081,7 @@ def delete_link(link_id: str) -> str:
         links_collection().delete(ids=[link_id])
     except Exception:
         pass
+    log_write("delete_link", {"link_id": link_id})
     return f"Deleted: {link_id}"
 
 
@@ -1044,11 +1106,21 @@ def diary_write(content: str, session_id: str = "") -> str:
     """
     from mycelium.config import DEPLOYMENT_MODE
 
+    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    _log_fields = {
+        "date": today_iso,
+        "session_id": session_id or None,
+        "size_bytes": len(content.encode("utf-8")),
+    }
+
     if DEPLOYMENT_MODE == "team":
         from mycelium.write_path.queued import diary_write_queued
-        return diary_write_queued(content, session_id)
+        result = diary_write_queued(content, session_id)
+        log_write("diary_write", {**_log_fields, "mode": "team"})
+        return result
 
     filepath = _vault_diary_write(content, session_id)
+    log_write("diary_write", {**_log_fields, "mode": "personal"})
     return f"Diary entry written: {filepath}"
 
 
