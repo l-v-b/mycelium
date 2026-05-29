@@ -27,7 +27,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-CHECKPOINT_INTERVAL = 20
+CHECKPOINT_INTERVAL = 12
 STATE_DIR = Path.home() / ".mycelium" / "state"
 LOG_PATH  = Path.home() / ".mycelium" / "hook.log"
 
@@ -119,12 +119,25 @@ def _count_human_messages(transcript_path: str) -> int:
                     # Claude Code shape: role nested under message
                     if isinstance(msg, dict) and msg.get("role") == "user":
                         content = msg.get("content", "")
+                        # Tool results are ALSO role=user in Claude Code's
+                        # transcript: they carry tool_result blocks and no
+                        # text. They must NOT count as human turns — otherwise
+                        # the count tracks tool-call volume, not conversation
+                        # length (a tool-heavy session inflates ~10x).
+                        if isinstance(content, list) and any(
+                            isinstance(b, dict) and b.get("type") == "tool_result"
+                            for b in content
+                        ):
+                            continue
                         text = (
                             content
                             if isinstance(content, str)
                             else _text_from_message_content(content)
                         )
-                        if "<command-message>" not in text:
+                        # Require genuine text (mirrors the Cursor branch's
+                        # `if text` guard) so empty-content user entries are
+                        # never tallied.
+                        if text.strip() and "<command-message>" not in text:
                             count += 1
                     elif entry.get("type") == "event_msg":
                         payload = entry.get("payload", {})
