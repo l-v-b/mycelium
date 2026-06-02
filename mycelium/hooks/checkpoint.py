@@ -13,7 +13,8 @@ The hook passes the actual since-last-checkpoint window (human-turn indices
 and count) into the prompt so the agent isn't guessing the boundary.
 
 State: ~/.mycelium/state/{session_id}_last_checkpoint
-Log:   ~/.mycelium/hook.log
+Log:   ~/.mycelium/checkpoint.log
+Interval override: MYCELIUM_CHECKPOINT_INTERVAL env var (default 12)
 
 Usage (settings.json):
   command: python3 /home/liam/.mycelium/hooks/checkpoint.py --harness claude-code
@@ -22,14 +23,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime
 from pathlib import Path
 
-CHECKPOINT_INTERVAL = 12
+# Human turns between checkpoints. Override without editing this file via the
+# MYCELIUM_CHECKPOINT_INTERVAL env var (set in the environment Claude Code is
+# launched from). Falls back to 12 on unset/empty/invalid.
+try:
+    CHECKPOINT_INTERVAL = max(1, int(os.environ.get("MYCELIUM_CHECKPOINT_INTERVAL", "12")))
+except ValueError:
+    CHECKPOINT_INTERVAL = 12
 STATE_DIR = Path.home() / ".mycelium" / "state"
-LOG_PATH  = Path.home() / ".mycelium" / "hook.log"
+LOG_PATH  = Path.home() / ".mycelium" / "checkpoint.log"
 
 
 def _build_reason(window_start: int, window_end: int, since: int) -> str:
