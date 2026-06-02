@@ -193,6 +193,18 @@ def main() -> None:
             except (ValueError, OSError):
                 pass
 
+    # Claude Code compacts/continues long sessions, which rewrites the
+    # transcript SHORTER. _count_human_messages then returns fewer turns than
+    # the marker written before compaction, so `count` regresses below `last`.
+    # Left unhandled, since = count - last goes negative and checkpoints
+    # silently stop for the rest of the session. Re-baseline the marker down
+    # to the current count so cadence resumes from here.
+    if count < last:
+        _log(f"session={session_id} count={count} < marker {last}; transcript "
+             "compacted — re-baselining marker to current count")
+        last = count
+        marker.write_text(str(count))
+
     since = count - last
     _log(f"session={session_id} count={count} last={last} since={since}")
 
