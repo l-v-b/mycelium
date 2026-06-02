@@ -45,7 +45,7 @@ from urllib.request import Request, urlopen
 
 CONFIG_PATH = Path.home() / ".mycelium" / "config.json"
 STATE_DIR   = Path.home() / ".mycelium" / "state"
-LOG_PATH    = Path.home() / ".mycelium" / "hook.log"
+LOG_PATH    = Path.home() / ".mycelium" / "userpromptsubmit.log"
 
 TOOL_NAME = "mycelium-context-titles"
 
@@ -255,7 +255,7 @@ def _dedup_and_format(titles: dict, surfaced: dict) -> tuple[str, dict]:
         "note_ids":      [n["note_id"] for n in new_notes],
         "drawer_ids":    [d["drawer_id"] for d in new_drawers],
         "link_ids":      [l["link_id"] for l in new_links],
-        # Human-readable summaries for hook.log — titles for notes,
+        # Human-readable summaries for userpromptsubmit.log — titles for notes,
         # wing/room for drawers, source--rel-->target for links.
         "note_titles":   [n.get("title", "Untitled") for n in new_notes],
         "drawer_labels": [
@@ -388,8 +388,8 @@ def main() -> None:
             f"({len(formatted)} chars)"
             f"{' [widened: ' + str(n_notes_arg) + '/' + str(n_drawers_arg) + '/' + str(n_links_arg) + ' @' + str(round(max_dist_arg, 2)) + ']' if widened else ''}"
         )
-        # Inline the surfaced titles/labels so a tail of hook.log shows
-        # what the agent actually got injected, not just counts.
+        # Inline the surfaced titles/labels so a tail of userpromptsubmit.log
+        # shows what the agent actually got injected, not just counts.
         for title in just_surfaced.get("note_titles", []):
             _log(f"  [note]   {title}")
         for label in just_surfaced.get("drawer_labels", []):
