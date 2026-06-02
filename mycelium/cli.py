@@ -719,31 +719,19 @@ def cmd_init(args: list[str]) -> None:
 
 
 def cmd_serve(args: list[str]) -> None:
-    """Start the mycelium FastMCP server (or the writer worker with --worker).
+    """Start the mycelium FastMCP server.
 
     Usage:
       mycelium serve [--host HOST] [--port PORT] [--transport TRANSPORT]
-      mycelium serve --worker
 
-    Default mode (no --worker): runs the FastMCP server. Defaults come from
-    `mycelium.config` (overridable via MYCELIUM_HOST / MYCELIUM_PORT env vars).
-    Transport defaults to `sse`; pass `--transport streamable-http` to switch.
+    Defaults come from `mycelium.config` (overridable via MYCELIUM_HOST /
+    MYCELIUM_PORT env vars). Transport defaults to `sse`; pass
+    `--transport streamable-http` to switch.
 
-    `--worker`: runs the team-mode writer worker that consumes the
-    `mycelium:writes` Redis stream and commits to ChromaDB. Only meaningful
-    when MYCELIUM_DEPLOYMENT_MODE=team. Requires redis-py
-    (`uv pip install mycelium-palace[team]`). Single process; restart-on-crash
-    via your supervisor (k8s RestartPolicy=Always or systemd).
-
-    The server reads its vault from `$MYCELIUM_DATA_DIR/vault/` and its
-    ChromaDB from `$MYCELIUM_DATA_DIR/chroma/`. Run `mycelium init` first
-    if you haven't set those up.
+    The server reads its vault from `$MYCELIUM_DATA_DIR/vault/` and its search
+    index from PostgreSQL/pgvector (MYCELIUM_DATABASE_URL). Run `mycelium init`
+    first if you haven't set those up.
     """
-    if "--worker" in args:
-        from mycelium.write_path import worker
-        worker.run()
-        return
-
     from mycelium.config import HOST as DEFAULT_HOST, PORT as DEFAULT_PORT
     from mycelium.server import mcp
 

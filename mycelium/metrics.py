@@ -4,8 +4,8 @@ Lazily-instantiated: importing this module does NOT pull in prometheus_client
 unless metrics are actually accessed. Most code paths call `record(...)` or
 `incr(...)` helpers, which become no-ops if prometheus_client isn't installed.
 
-This keeps prometheus_client an OPTIONAL dependency (team-mode users add the
-`[team]` extra). Personal-mode users don't need it.
+This keeps prometheus_client an OPTIONAL dependency (install the `[metrics]`
+extra to enable Prometheus export). Without it, metric calls are no-ops.
 """
 from __future__ import annotations
 
