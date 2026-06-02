@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mycelium-palace"
-version = "2.3.0"
+version = "2.3.1"
 description = "A unified memory system for AI agents: verbatim captures (drawers), curated notes, and typed links — over MCP."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -33,8 +33,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-team = [
-    "redis>=5.0",
+# Prometheus metrics export (optional in any mode; metrics.py no-ops without it).
+# redis dropped — the team async write path was removed when storage moved to
+# synchronous pgvector (v2.3.0).
+metrics = [
     "prometheus-client>=0.20",
 ]
 

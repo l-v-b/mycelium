@@ -41,25 +41,27 @@ Layered checks compound this:
 | `test_30_intent_guard.py` | `write_note` rejects empty `intent`; rejected writes don't persist |
 | `test_40_dedupe.py` | idempotent upsert by title; near-dup-different-title warning; `check_duplicate` |
 | `test_50_links.py` | add/query/find/delete links; `ended_at` filter; context graph expansion |
-| `test_60_lifecycle_team.py` | **team-only, white-box**: enqueue→draft→worker commit→queryable |
-| `test_70_deletes_sync.py` | deletes/updates are synchronous even in team mode; resurrection race (xfail) |
+| `test_70_deletes_sync.py` | deletes/updates are synchronous; resurrection race (xfail) |
 | `test_80_whitebox_provenance.py` | `author`/`committed_at`/`source_intent` stamped on disk |
-| `test_90_parity.py` | **parity**: personal vs team observable equivalence |
 
-Markers: `blackbox`, `whitebox`, `parity`, `team_only`, `personal_only`,
-`known_race`.
+Markers: `blackbox`, `whitebox`, `personal_only`, `known_race`. (The `team_only`
+and `parity` markers, and the `test_60_lifecycle_team`/`test_90_parity` suites,
+were retired with the ChromaDB→pgvector migration: storage is now synchronous
+pgvector in both modes, so there's no async lifecycle or personal-vs-team
+backend split to assert.)
 
 ## Running locally (hermetic — the deep gate)
 
-Brings up a personal stack **and** a full team stack (server + Redis + worker),
-then runs the contract + white-box suite against each and the parity oracle:
+Brings up postgres+pgvector + the mycelium server, then runs the contract +
+white-box suite against it (both deployment modes share this synchronous
+pgvector path, so one stack is representative):
 
 ```bash
-tests/e2e/run_e2e.sh          # KEEP=1 to leave stacks up for debugging
+tests/e2e/run_e2e.sh          # KEEP=1 to leave the stack up for debugging
 ```
 
-This needs Docker. It builds the team image with `--build-arg MYCELIUM_EXTRAS="[team]"`
-(redis-py + prometheus-client) — the same flag the team k8s image must use.
+This needs Docker. Same image the k8s deployment uses; the search index lives
+in pgvector (no embedded/standalone ChromaDB, no Redis, no writer worker).
 
 ## Running against a deployed stack (black-box)
 

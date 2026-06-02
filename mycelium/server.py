@@ -410,30 +410,9 @@ def file(
     Returns:
         Confirmation with drawer_id.
 
-    In team mode (MYCELIUM_DEPLOYMENT_MODE=team), the chroma upsert is
-    deferred to the writer worker; closet update still happens synchronously.
+    Writes are synchronous in all modes (pgvector backend): disk write +
+    pgvector upsert happen inside this call.
     """
-    from mycelium.config import DEPLOYMENT_MODE
-
-    if DEPLOYMENT_MODE == "team":
-        from mycelium.write_path.queued import file_queued
-        result = file_queued(content, wing, room)
-        # Closet update is local + cheap, runs in both modes synchronously.
-        try:
-            from mycelium.vault import drawer_id as _did_fn
-            did = _did_fn(content, wing, room)
-            _vault_update_closet_for_drawer(did, wing, room, content)
-        except Exception:
-            did = None
-        log_write("file", {
-            "drawer_id": did,
-            "wing": wing,
-            "room": room,
-            "size_bytes": len(content.encode("utf-8")),
-            "mode": "team",
-        })
-        return result
-
     did, filepath = _vault_write_drawer(content, wing, room)
     _index_drawer(did, content, wing, room, str(filepath))
     try:
@@ -610,9 +589,8 @@ def write_note(
         caller may want to update that note instead of creating a parallel one,
         since write_note upserts by title).
 
-    In team mode (MYCELIUM_DEPLOYMENT_MODE=team), the disk write happens
-    synchronously and a signal is enqueued to Redis; the writer worker
-    commits to ChromaDB asynchronously (~minutes lag worst-case).
+    Writes are synchronous in all modes (pgvector backend): disk write +
+    pgvector upsert happen inside this call.
 
     Raises:
         ValueError: if `intent` is empty or whitespace-only.
@@ -624,8 +602,6 @@ def write_note(
             "source_intent in the note's frontmatter for future provenance). "
             "Use file() instead if you have no synthesis reasoning to attach."
         )
-
-    from mycelium.config import DEPLOYMENT_MODE
 
     def _dedupe_query(q: str, n: int) -> str:
         return query_notes(q, n_results=n)
@@ -639,16 +615,6 @@ def write_note(
         "intent_length": len(intent or ""),
         "body_length": len(content.encode("utf-8")),
     }
-
-    if DEPLOYMENT_MODE == "team":
-        from mycelium.write_path.queued import write_note_queued
-        result = write_note_queued(
-            title, content, tags, source_memories, status,
-            intent=intent,
-            query_notes_fn=_dedupe_query,
-        )
-        log_write("write_note", {**_log_fields, "mode": "team"})
-        return result
 
     from mycelium.write_path.direct import write_note_direct
 
@@ -1104,24 +1070,14 @@ def diary_write(content: str, session_id: str = "") -> str:
         content: Entry content.
         session_id: Optional session ID for attribution.
 
-    In team mode (MYCELIUM_DEPLOYMENT_MODE=team), the daily file is written
-    synchronously and a diary signal is enqueued; the worker re-indexes the
-    day's full file into chroma asynchronously.
+    Synchronous in all modes (pgvector backend).
     """
-    from mycelium.config import DEPLOYMENT_MODE
-
     today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     _log_fields = {
         "date": today_iso,
         "session_id": session_id or None,
         "size_bytes": len(content.encode("utf-8")),
     }
-
-    if DEPLOYMENT_MODE == "team":
-        from mycelium.write_path.queued import diary_write_queued
-        result = diary_write_queued(content, session_id)
-        log_write("diary_write", {**_log_fields, "mode": "team"})
-        return result
 
     filepath = _vault_diary_write(content, session_id)
     log_write("diary_write", {**_log_fields, "mode": "personal"})

@@ -1,6 +1,8 @@
 """Write-path coordination for mycelium.
 
-In personal mode (default), writes happen synchronously inside the MCP call
-— this module currently exists as scaffolding for the team-mode work landing
-in a follow-up PR. The frontmatter helpers below are usable from either path.
+Writes happen synchronously inside the MCP call in all deployment modes
+(pgvector backend): disk write + pgvector upsert. The `direct` module is the
+write path; `dedupe` and `frontmatter` are its helpers. (The old `queued`
+module + writer worker were removed when storage moved to synchronous pgvector
+in v2.3.0.)
 """
