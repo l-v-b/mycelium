@@ -1,0 +1,4 @@
+# Test-only dependencies for the e2e suite. Installed in the runner / CI
+# integration-test container — NOT a dependency of the mycelium package itself.
+pytest>=8.0
+fastmcp>=2.0          # MCP client (talks to the deployed server over the wire)

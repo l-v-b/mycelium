@@ -1,0 +1,61 @@
+# GitLab SIT integration-test wiring for mycelium (Generic Docker pipeline).
+#
+# Per Rain's "GitLab Pipeline Integration Testing" docs, the generic Docker
+# template exposes an OPTIONAL integration-test job that runs BETWEEN the `sit`
+# and `prod` deployments and GATES prod. It is enabled via pipeline `inputs`:
+#   integration_test_enabled / integration_test_container / integration_test_command
+#
+# This snippet goes in the .gitlab-ci.yml of the Rain GitLab deploy repo for
+# mycelium (the k8s/helm repo), NOT the package repo.
+#
+# It runs the BLACK-BOX e2e suite against the deployed SIT stack in team mode.
+# (White-box + parity layers run in the hermetic `tests/e2e/run_e2e.sh` gate,
+#  which needs Docker-in-Docker — wire that as a separate pre-merge job.)
+
+include:
+  - project: software-engineering/catalyst/pipeline-templates
+    ref: main
+    file: pipeline.docker.helm.gitlab-ci.yml
+    inputs:
+      integration_test_enabled: true
+      # Confirm exact tag exists in Harbor before pinning.
+      integration_test_container: "harbor.cicd.rain.co.za/docker.io/library/python:3.12-slim"
+      integration_test_command:
+        - "set -euo pipefail"
+        - "pip install --no-cache-dir 'fastmcp>=2.0' 'pytest>=8.0'"
+        # The e2e suite lives in the mycelium package repo. Fetch it at the tag
+        # being deployed so the tests match the artifact under test.
+        # MYCELIUM_REPO + MYCELIUM_GIT_TOKEN are masked CI/CD variables.
+        - "git clone --depth 1 --branch \"${CI_COMMIT_TAG:-main}\" \"https://oauth2:${MYCELIUM_GIT_TOKEN}@${MYCELIUM_REPO}\" /src"
+        - "cd /src"
+        - "python -m pytest -c tests/e2e/pytest.ini tests/e2e -m 'blackbox and not parity'"
+
+# ---------------------------------------------------------------------------
+# Required CI/CD variables (Settings -> CI/CD -> Variables), masked:
+#
+#   MYCELIUM_E2E_URL     SIT MCP endpoint the runner can reach. TWO open
+#                        questions the pipeline-templates repo must answer:
+#                          (a) in-cluster runner  -> http://mycelium.<ns>.svc:9002/sse
+#                          (b) external runner     -> https://mycelium-sit.vibe.rain.co.za/sse
+#                          (c) via ContextForge    -> https://cf-sit.../servers/<id>/mcp
+#                        Pick per how Rain's runners are placed; set transport
+#                        to match ("sse" for /sse, "http" for /mcp).
+#   MYCELIUM_E2E_MODE    "team"   (SIT runs MYCELIUM_DEPLOYMENT_MODE=team)
+#   MYCELIUM_E2E_TRANSPORT  "sse" | "http"
+#   MYCELIUM_E2E_TOKEN   bearer JWT — ONLY if reaching via the CF gateway (c)
+#   MYCELIUM_E2E_COMMIT_TIMEOUT  "90"  (worker commit SLA window, seconds)
+#   MYCELIUM_E2E_ALLOW_DIARY     "0"   (don't pollute a real day's diary file)
+#   MYCELIUM_REPO        host/path of the package repo, e.g. github.com/l-v-b/mycelium.git
+#   MYCELIUM_GIT_TOKEN   read token for that repo (if private)
+#
+# These are passed to the job as normal env (GitLab injects CI/CD variables);
+# the suite reads them directly. Exit code gates prod: any failure blocks the
+# prod deploy.
+#
+# OPEN ITEMS to confirm from `software-engineering/catalyst/pipeline-templates`
+# -> pipeline.docker.helm.gitlab-ci.yml (the docs page does not specify these):
+#   - whether the integration-test job clones the deploy repo (GIT_STRATEGY)
+#     and whether outbound git/network egress is allowed for the clone above;
+#   - whether the runner can reach the SIT service in-cluster vs via ingress;
+#   - whether KUBECONFIG is available (would let us also run the white-box
+#     layer via MYCELIUM_E2E_EXEC="kubectl exec -n <ns>").
