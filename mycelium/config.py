@@ -16,6 +16,27 @@ DIARY_DIR    = VAULT_DIR / "diary"
 CONCEPTS_DIR = VAULT_DIR / "concepts"
 LINKS_DIR    = VAULT_DIR / "links"
 
+# --- Legacy ChromaDB settings (storage migrated to pgvector — see db.py) -----
+# Retained only so a couple of cli status prints + the compat chroma.py shim
+# don't break. Unused by the pgvector backend; remove once those references go.
+CHROMA_HTTP_URL = os.environ.get("MYCELIUM_CHROMA_URL", "")
+
+# --- pgvector / PostgreSQL backend (db.py) -----------------------------------
+# Single connection string for the derived search index. Both personal and team
+# modes use pgvector now — personal points at a local postgres, team at the
+# shared cluster DB (e.g. sit-pg-cluster). psycopg3 DSN form.
+DATABASE_URL = os.environ.get(
+    "MYCELIUM_DATABASE_URL",
+    "postgresql://mycelium:mycelium@localhost:5432/mycelium",
+)
+
+# Connection-pool sizing. Kept small to fit the per-role connection limit
+# (mycelium_user is capped at 10 concurrent on sit-pg-cluster). Tune via env.
+DB_POOL_MIN     = int(os.environ.get("MYCELIUM_DB_POOL_MIN", "1"))
+DB_POOL_SIZE    = int(os.environ.get("MYCELIUM_DB_POOL_SIZE", "5"))
+DB_POOL_TIMEOUT = float(os.environ.get("MYCELIUM_DB_POOL_TIMEOUT", "30"))
+DB_POOL_RECYCLE = float(os.environ.get("MYCELIUM_DB_POOL_RECYCLE", "300"))
+
 HOST = os.environ.get("MYCELIUM_HOST", "0.0.0.0")
 PORT = int(os.environ.get("MYCELIUM_PORT", "9002"))
 

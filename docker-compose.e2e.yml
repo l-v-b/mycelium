@@ -1,0 +1,50 @@
+# Hermetic e2e harness for the pgvector backend.
+#
+# Replaces the old ChromaDB+Redis+worker stack. Both personal and team modes
+# now write synchronously to pgvector, so the harness is a single server over
+# one postgres+pgvector instance — no standalone chroma service, no redis, no
+# writer worker, no personal-vs-team parity split.
+#
+#   docker compose -f docker-compose.e2e.yml up -d --build
+#   # server: http://localhost:9101/sse
+#
+# tests/e2e/run_e2e.sh orchestrates build -> wait-healthy -> pytest -> teardown.
+
+services:
+  postgres:
+    # pgvector/pgvector ships postgres + the `vector` extension preinstalled.
+    image: pgvector/pgvector:pg16
+    container_name: mycelium-e2e-postgres
+    environment:
+      POSTGRES_USER: mycelium
+      POSTGRES_PASSWORD: mycelium
+      POSTGRES_DB: mycelium
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mycelium -d mycelium"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    # No host port published — only the mycelium server needs it, in-network.
+
+  mycelium:
+    build:
+      context: .
+    container_name: mycelium-e2e-server
+    environment:
+      MYCELIUM_DEPLOYMENT_MODE: personal
+      MYCELIUM_AUTHOR: e2e@rain.test
+      MYCELIUM_DATA_DIR: /data
+      MYCELIUM_PORT: "9002"
+      MYCELIUM_DATABASE_URL: postgresql://mycelium:mycelium@postgres:5432/mycelium
+      # Small pool — mirrors the per-role cap we'll hit on sit-pg-cluster.
+      MYCELIUM_DB_POOL_SIZE: "5"
+    ports:
+      - "9101:9002"
+    volumes:
+      - mycelium-data:/data        # markdown vault (canonical); pgvector is the index
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  mycelium-data:
