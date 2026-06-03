@@ -86,6 +86,15 @@ def get_client():
 # --------------------------------------------------------------------------- #
 # Schema
 # --------------------------------------------------------------------------- #
+# Postgres caps a single tsvector at 1 MiB (1048575 bytes); to_tsvector raises
+# ProgramLimitExceeded above that. Some documents exceed it — notably closet
+# documents, which concatenate every drawer in a (wing, room) (the liam/general
+# room alone is ~86k drawers → multi-MB). We cap the FULL-TEXT index input with
+# left(document, 1000000); the complete document is still stored in `document`
+# and embedded for vector search, so only the lexical index is truncated — and
+# lexical search over a 1 MB+ blob is meaningless anyway. left() and the 2-arg
+# to_tsvector(regconfig, text) are both immutable, so the expression stays valid
+# in a STORED generated column.
 _DDL = """
 CREATE EXTENSION IF NOT EXISTS vector;
 
@@ -95,7 +104,7 @@ CREATE TABLE IF NOT EXISTS mycelium_notes (
     embedding vector({dim}) NOT NULL,
     status    TEXT,
     extra     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    body_tsv  tsvector GENERATED ALWAYS AS (to_tsvector('english', document)) STORED
+    body_tsv  tsvector GENERATED ALWAYS AS (to_tsvector('english', left(document, 1000000))) STORED
 );
 CREATE INDEX IF NOT EXISTS mycelium_notes_embedding_idx
     ON mycelium_notes USING hnsw (embedding vector_cosine_ops);
@@ -111,7 +120,7 @@ CREATE TABLE IF NOT EXISTS mycelium_drawers (
     wing      TEXT,
     room      TEXT,
     extra     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    body_tsv  tsvector GENERATED ALWAYS AS (to_tsvector('english', document)) STORED
+    body_tsv  tsvector GENERATED ALWAYS AS (to_tsvector('english', left(document, 1000000))) STORED
 );
 CREATE INDEX IF NOT EXISTS mycelium_drawers_embedding_idx
     ON mycelium_drawers USING hnsw (embedding vector_cosine_ops);
@@ -125,7 +134,7 @@ CREATE TABLE IF NOT EXISTS mycelium_links (
     document  TEXT NOT NULL,
     embedding vector({dim}) NOT NULL,
     extra     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    body_tsv  tsvector GENERATED ALWAYS AS (to_tsvector('english', document)) STORED
+    body_tsv  tsvector GENERATED ALWAYS AS (to_tsvector('english', left(document, 1000000))) STORED
 );
 CREATE INDEX IF NOT EXISTS mycelium_links_embedding_idx
     ON mycelium_links USING hnsw (embedding vector_cosine_ops);
@@ -137,7 +146,7 @@ CREATE TABLE IF NOT EXISTS mycelium_closets (
     document  TEXT NOT NULL,
     embedding vector({dim}) NOT NULL,
     extra     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    body_tsv  tsvector GENERATED ALWAYS AS (to_tsvector('english', document)) STORED
+    body_tsv  tsvector GENERATED ALWAYS AS (to_tsvector('english', left(document, 1000000))) STORED
 );
 CREATE INDEX IF NOT EXISTS mycelium_closets_embedding_idx
     ON mycelium_closets USING hnsw (embedding vector_cosine_ops);
