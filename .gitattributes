@@ -1,0 +1,3 @@
+# Vendored ONNX model + tokenizer assets — treat as binary (no diff/merge).
+mycelium/_models/** binary
+*.onnx binary
