@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mycelium-palace"
-version = "2.3.2"
+version = "2.4.0"
 description = "A unified memory system for AI agents: verbatim captures (drawers), curated notes, and typed links — over MCP."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -23,9 +23,14 @@ classifiers = [
 ]
 dependencies = [
     "fastmcp>=2.0",
-    # chromadb is retained ONLY for its bundled ONNX MiniLM embedder
-    # (mycelium/embedder.py); the vector store is now pgvector (mycelium/db.py).
-    "chromadb>=0.6",
+    # Embedder: direct onnxruntime + the bundled all-MiniLM-L6-v2 model
+    # (mycelium/_models/, loaded by mycelium/embedder.py). Replaces the heavy
+    # chromadb dependency, which was previously pulled in ONLY for this embedder
+    # (the vector store is pgvector — mycelium/db.py). Vectors are byte-identical
+    # to the old chromadb embedder (same model.onnx + forward pass), so no reindex.
+    "onnxruntime>=1.16",
+    "tokenizers>=0.15",
+    "numpy>=1.23",
     "psycopg[binary]>=3.2",
     "psycopg-pool>=3.2",
     "pydantic>=2.0",
@@ -53,4 +58,5 @@ packages = ["mycelium"]
 artifacts = [
     "mycelium/hooks/*.py",
     "mycelium/skills/**/*",
+    "mycelium/_models/**/*",
 ]
