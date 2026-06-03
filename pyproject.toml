@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mycelium-palace"
-version = "2.4.0"
+version = "2.5.0"
 description = "A unified memory system for AI agents: verbatim captures (drawers), curated notes, and typed links — over MCP."
 readme = "README.md"
 requires-python = ">=3.12"
