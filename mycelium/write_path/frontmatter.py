@@ -42,13 +42,17 @@ def stamp_committed(extras: dict, committed: bool = True) -> dict:
 def stamp_author(extras: dict, author: str | None = None) -> dict:
     """Stamp `author` on a frontmatter dict.
 
-    Falls back to mycelium.config.AUTHOR (env / git config / "unknown").
-    Future team mode will pass an explicit author derived from the
-    auth context; in personal mode the fallback is always used.
+    When no explicit author is passed, resolve it per-call via
+    mycelium.identity.resolve_author():
+      - team mode: the ContextForge-propagated end-user identity
+        (X-Forwarded-User-* header) — FAIL-CLOSED if absent.
+      - personal mode: mycelium.config.AUTHOR (env / git config / "unknown").
+    This is the single choke point through which every write path
+    (write_note / write_drawer / write_link / diary) acquires its author.
     """
     if author is None:
-        from mycelium.config import AUTHOR
-        author = AUTHOR
+        from mycelium.identity import resolve_author
+        author = resolve_author()
     extras["author"] = author
     return extras
 
