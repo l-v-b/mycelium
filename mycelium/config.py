@@ -40,6 +40,11 @@ DB_POOL_RECYCLE = float(os.environ.get("MYCELIUM_DB_POOL_RECYCLE", "300"))
 HOST = os.environ.get("MYCELIUM_HOST", "0.0.0.0")
 PORT = int(os.environ.get("MYCELIUM_PORT", "9002"))
 
+# Prometheus exporter port. 0/unset = disabled. When set (and the `[metrics]`
+# extra is installed), the server starts a side HTTP exporter on this port,
+# off the MCP transport port so it needs no auth and is scraped directly.
+METRICS_PORT = int(os.environ.get("MYCELIUM_METRICS_PORT", "0"))
+
 
 # ---------------------------------------------------------------------------
 # Deployment mode — server-side

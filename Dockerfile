@@ -15,16 +15,17 @@ COPY . /app/
 # package (mycelium/_models/) and installed with it — no runtime download and
 # no separate bake step (the embedder loads it directly via onnxruntime).
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
+    && pip install --no-cache-dir ".[metrics]"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     MYCELIUM_DATA_DIR=/data \
     MYCELIUM_HOST=0.0.0.0 \
     MYCELIUM_PORT=9002 \
+    MYCELIUM_METRICS_PORT=9090 \
     MYCELIUM_DEPLOYMENT_MODE=personal
 
-EXPOSE 9002
+EXPOSE 9002 9090
 
 VOLUME ["/data"]
 

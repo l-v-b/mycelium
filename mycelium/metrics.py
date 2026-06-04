@@ -107,6 +107,23 @@ def _init() -> None:
     )
 
 
+def start_exporter(port: int, addr: str = "0.0.0.0") -> bool:
+    """Start the Prometheus HTTP exporter on `port`.
+
+    No-op returning False if `port` is falsy or prometheus_client isn't
+    installed (the `[metrics]` extra). Calls `_init()` first so all metric
+    series are registered and appear (at 0) on the very first scrape.
+    """
+    if not port:
+        return False
+    _init()
+    if not _available:
+        return False
+    from prometheus_client import start_http_server
+    start_http_server(port, addr=addr)
+    return True
+
+
 def incr(name: str, labels: dict | None = None, value: float = 1.0) -> None:
     """Increment a counter. No-op if prometheus_client not installed.
 
