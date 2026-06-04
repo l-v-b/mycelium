@@ -13,6 +13,7 @@ import time
 from typing import Callable, Optional
 
 from mycelium import metrics, vault
+from mycelium.config import DEPLOYMENT_MODE
 
 
 def write_note_direct(
@@ -67,8 +68,8 @@ def write_note_direct(
     upsert_note_fn(nid, title, content, chroma_metadata)
 
     elapsed_ms = (time.perf_counter() - started) * 1000
-    metrics.observe("write_latency_ms", elapsed_ms, {"tool": "write_note", "mode": "personal"})
-    metrics.incr("write_total", {"tool": "write_note", "mode": "personal", "outcome": "committed"})
+    metrics.observe("write_latency_ms", elapsed_ms, {"tool": "write_note", "mode": DEPLOYMENT_MODE})
+    metrics.incr("write_total", {"tool": "write_note", "mode": DEPLOYMENT_MODE, "outcome": "committed"})
 
     confirmation = f"Note written: {nid}\nFile: {filepath}"
     if duplicate_warning:
@@ -88,8 +89,8 @@ def file_direct(
     upsert_drawer_fn(did, content, wing, room, filepath)
 
     elapsed_ms = (time.perf_counter() - started) * 1000
-    metrics.observe("write_latency_ms", elapsed_ms, {"tool": "file", "mode": "personal"})
-    metrics.incr("write_total", {"tool": "file", "mode": "personal", "outcome": "committed"})
+    metrics.observe("write_latency_ms", elapsed_ms, {"tool": "file", "mode": DEPLOYMENT_MODE})
+    metrics.incr("write_total", {"tool": "file", "mode": DEPLOYMENT_MODE, "outcome": "committed"})
 
     return f"Filed: {did} → {wing}/{room}"
 
@@ -105,7 +106,7 @@ def diary_write_direct(
     filepath = vault.diary_write(content, session_id)
 
     elapsed_ms = (time.perf_counter() - started) * 1000
-    metrics.observe("write_latency_ms", elapsed_ms, {"tool": "diary_write", "mode": "personal"})
-    metrics.incr("write_total", {"tool": "diary_write", "mode": "personal", "outcome": "committed"})
+    metrics.observe("write_latency_ms", elapsed_ms, {"tool": "diary_write", "mode": DEPLOYMENT_MODE})
+    metrics.incr("write_total", {"tool": "diary_write", "mode": DEPLOYMENT_MODE, "outcome": "committed"})
 
     return f"Diary entry written: {filepath}"
