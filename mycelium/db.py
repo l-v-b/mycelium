@@ -66,6 +66,13 @@ def get_pool() -> ConnectionPool:
                     max_size=config.DB_POOL_SIZE,
                     timeout=config.DB_POOL_TIMEOUT,
                     max_idle=config.DB_POOL_RECYCLE,
+                    # Validate (ping) each connection as it leaves the pool and
+                    # transparently replace dead ones. Without this, a connection
+                    # the server closed while idle (e.g. sit-pg-cluster idle
+                    # timeout) is handed out stale and the first execute fails
+                    # with "OperationalError: server closed the connection
+                    # unexpectedly". check_connection runs a cheap SELECT 1.
+                    check=ConnectionPool.check_connection,
                     kwargs={"row_factory": dict_row, "autocommit": True},
                     open=True,
                 )
