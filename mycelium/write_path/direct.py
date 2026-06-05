@@ -61,6 +61,7 @@ def write_note_direct(
         "source_memories": json.dumps(source_memories),
         "created_at":      now,
         "filepath":        str(filepath),
+        "author":          (loaded or {}).get("author", ""),
     }
     if final_status:
         chroma_metadata["status"] = final_status

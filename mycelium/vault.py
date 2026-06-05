@@ -251,6 +251,7 @@ def load_note(filepath: Path) -> dict[str, Any] | None:
             "created_at":      post.get("created", ""),
             "updated_at":      post.get("updated", ""),
             "status":          post.get("status", ""),
+            "author":          post.get("author", ""),
             "content":         post.content,
             "filepath":        str(filepath),
         }
@@ -345,6 +346,7 @@ def get_drawer(did: str) -> dict[str, Any] | None:
             "wing":      post.get("wing", "unknown"),
             "room":      post.get("room", "unknown"),
             "filed_at":  post.get("filed_at", ""),
+            "author":    post.get("author", ""),
             "content":   post.content,
             "filepath":  str(filepath),
         }
@@ -853,6 +855,7 @@ def reindex_notes() -> tuple[int, int]:
             "source_memories": json.dumps(n["source_memories"]),
             "created_at":      n["created_at"],
             "filepath":        n["filepath"],
+            "author":          n.get("author", ""),
         }
         # Propagate the `status` field from frontmatter so `where={"status":...}`
         # filter queries work after a disk-side backfill. Skip when unset so we
@@ -930,7 +933,7 @@ def reindex_drawers() -> tuple[int, int]:
         print(_progress("drawers", upserted, total, t0), flush=True)
         batch_ids.clear(); batch_docs.clear(); batch_metas.clear()
 
-    def _enqueue_drawer(did: str, content: str, wing: str, room: str, filed_at: str, source_file: str) -> None:
+    def _enqueue_drawer(did: str, content: str, wing: str, room: str, filed_at: str, source_file: str, author: str = "") -> None:
         nonlocal upserted
         chunks = chunk_content(content)
         total_chunks = len(chunks)
@@ -946,6 +949,7 @@ def reindex_drawers() -> tuple[int, int]:
                 "room":         room,
                 "filed_at":     filed_at,
                 "source_file":  source_file,
+                "author":       author,
             })
         upserted += 1
         if len(batch_ids) >= REINDEX_BATCH_SIZE:
@@ -956,7 +960,7 @@ def reindex_drawers() -> tuple[int, int]:
         d = get_drawer(f.stem)
         if not d:
             continue
-        _enqueue_drawer(d["drawer_id"], d["content"], d["wing"], d["room"], d["filed_at"], d["filepath"])
+        _enqueue_drawer(d["drawer_id"], d["content"], d["wing"], d["room"], d["filed_at"], d["filepath"], d.get("author", ""))
 
     # Diary days indexed as drawers (id = diary_YYYY-MM-DD)
     for f in (DIARY_DIR.glob("*.md") if DIARY_DIR.exists() else []):

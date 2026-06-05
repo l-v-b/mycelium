@@ -735,9 +735,19 @@ def query_notes(query: str, n_results: int = 10, _caller: str = "agent") -> str:
             results["distances"][0],
         ):
             slug = meta.get("slug") or _slugify(meta.get("title", ""))
+            # Author provenance. Prefer the indexed metadata; fall back to the
+            # on-disk frontmatter for notes indexed before `author` was added
+            # to the metadata, so existing notes surface it without a forced
+            # reindex.
+            author = meta.get("author")
+            if not author:
+                _fp = meta.get("filepath")
+                if _fp:
+                    author = (_vault_load_note(Path(_fp)) or {}).get("author", "")
             notes.append({
                 "note_id":         _note_id_fn(slug),
                 "title":           meta.get("title"),
+                "author":          author or "",
                 "tags":            json.loads(meta.get("tags", "[]")),
                 "distance":        round(dist, 4),
                 "content":         doc,
@@ -1304,6 +1314,11 @@ def _index_drawer(did: str, content: str, wing: str, room: str, filepath: str) -
     chunks = _chunk_content(content)
     total_chunks = len(chunks)
     now = datetime.now(timezone.utc).isoformat()
+    # Author provenance from the on-disk frontmatter (best-effort).
+    try:
+        author = frontmatter.load(filepath).get("author", "") if filepath else ""
+    except Exception:
+        author = ""
     ids, docs, metas = [], [], []
     for i, chunk_text in enumerate(chunks):
         chunk_id = did if total_chunks == 1 else f"{did}__c{i}"
@@ -1317,6 +1332,7 @@ def _index_drawer(did: str, content: str, wing: str, room: str, filepath: str) -
             "room":         room,
             "filed_at":     now,
             "source_file":  filepath,
+            "author":       author,
         })
     col.upsert(ids=ids, documents=docs, metadatas=metas)
 

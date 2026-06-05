@@ -236,6 +236,7 @@ def search_drawers(
             "drawer_id":          did,
             "source_file":        meta.get("source_file", "?"),
             "filed_at":           meta.get("filed_at", ""),
+            "author":             meta.get("author", ""),
             "similarity":         round(max(0.0, 1 - effective_dist), 3),
             "distance":           round(dist, 4),
             "effective_distance": round(effective_dist, 4),
