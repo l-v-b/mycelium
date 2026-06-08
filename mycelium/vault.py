@@ -502,48 +502,110 @@ def delete_link_file(lid: str) -> bool:
 # Diary
 # ---------------------------------------------------------------------------
 
-def diary_write(content: str, session_id: str = "", author: str | None = None) -> Path:
-    """Append a diary entry for today. Re-indexes the day's full file into
-    the drawers collection so diary content surfaces in search/context.
+# Diary entries are filed per-author-per-day: vault/diary/{date}-{slug}.md, one
+# file per (calendar day, author). The derived drawer id is `diary_` + the
+# filename stem (e.g. diary_2026-06-05-liam.blignaut), so every index / orphan /
+# reindex site that builds `diary_{f.stem}` stays correct with no date/slug
+# parsing of its own.
+DIARY_WING = "wing_claude"
+DIARY_ROOM = "diary"
 
-    `author` is stamped in the per-entry HTML comment alongside the timestamp
-    and session id. Defaults to mycelium.config.AUTHOR.
+_DIARY_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def _author_slug(author: str) -> str:
+    """Filesystem-safe slug from an author identity for the diary filename.
+
+    Uses the email local-part when present (liam.blignaut@rain.co.za ->
+    liam.blignaut); lowercased, non-alphanumerics collapsed to '.'. The full
+    identity is preserved in the file's `author` frontmatter.
     """
-    if author is None:
-        from mycelium.config import AUTHOR
-        author = AUTHOR
+    local = author.split("@", 1)[0] if "@" in author else author
+    slug = re.sub(r"[^a-z0-9]+", ".", local.lower()).strip(".")
+    return slug or "unknown"
 
+
+def _diary_date_of(stem: str) -> str:
+    """Calendar-date prefix of a diary filename stem.
+
+    '2026-06-05-liam.blignaut' -> '2026-06-05'; legacy '2026-06-05' -> itself.
+    """
+    m = _DIARY_DATE_RE.match(stem)
+    return m.group(1) if m else stem
+
+
+def diary_write(content: str, session_id: str = "", author: str | None = None) -> Path:
+    """Append a diary entry for today into a per-author-per-day file.
+
+    Files are `vault/diary/{YYYY-MM-DD}-{slug}.md`, one per (calendar day,
+    author), carrying YAML frontmatter (author / date / wing / room /
+    committed_at / session_ids). Each entry is delimited and keeps a per-entry
+    HTML comment with its own timestamp + session id.
+
+    Author resolves via identity.resolve_author() — fail-closed in team mode,
+    config.AUTHOR in personal mode — so the diary obeys the same provenance rule
+    as every other write path. Re-indexes the file into the drawers collection
+    so diary content surfaces in search/context.
+    """
+    from mycelium.write_path.frontmatter import now_iso
+
+    if author is None:
+        from mycelium.identity import resolve_author
+        author = resolve_author()
+
+    slug = _author_slug(author)
     DIARY_DIR.mkdir(parents=True, exist_ok=True)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    filepath = DIARY_DIR / f"{today}.md"
+    filepath = DIARY_DIR / f"{today}-{slug}.md"
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = now_iso()
     entry = f"\n\n---\n<!-- {now} session={session_id} author={author} -->\n{content}"
 
     if filepath.exists():
-        filepath.write_text(filepath.read_text(encoding="utf-8") + entry, encoding="utf-8")
+        post = frontmatter.load(str(filepath))
+        post.content = post.content + entry
+        sessions = list(post.get("session_ids") or [])
+        if session_id and session_id not in sessions:
+            sessions.append(session_id)
+        post["session_ids"] = sessions
+        post["committed_at"] = now
     else:
-        filepath.write_text(f"# Diary {today}{entry}", encoding="utf-8")
+        post = frontmatter.Post(
+            f"# Diary {today} — {slug}{entry}",
+            id=f"diary_{today}-{slug}",
+            author=author,
+            date=today,
+            wing=DIARY_WING,
+            room=DIARY_ROOM,
+            committed_at=now,
+            session_ids=[session_id] if session_id else [],
+        )
 
-    _git_commit(f"diary: {today}")
-    _index_diary_day(today, filepath)
+    filepath.write_text(frontmatter.dumps(post), encoding="utf-8")
+    _git_commit(f"diary: {today} ({slug})")
+    _index_diary_day(filepath)
     return filepath
 
 
-def _index_diary_day(date_str: str, filepath: Path) -> None:
-    """Upsert a diary day's full content into the drawers collection so it's
-    searchable. Wing=wing_claude, room=diary. Stable ID per day (idempotent)."""
+def _index_diary_day(filepath: Path) -> None:
+    """Upsert a diary file's body into the drawers collection so it's searchable.
+
+    Reads author/wing from frontmatter; drawer id = `diary_` + filename stem
+    (stable + idempotent). The YAML frontmatter is excluded from the embedded
+    document — only the diary body is indexed."""
     try:
         from mycelium.chroma import drawers_collection
-        body = filepath.read_text(encoding="utf-8")
+        post = frontmatter.load(str(filepath))
+        diary_id = f"diary_{filepath.stem}"
         drawers_collection().upsert(
-            ids=[f"diary_{date_str}"],
-            documents=[body],
+            ids=[diary_id],
+            documents=[post.content],
             metadatas=[{
-                "drawer_id":   f"diary_{date_str}",
-                "wing":        "wing_claude",
-                "room":        "diary",
-                "filed_at":    date_str,
+                "drawer_id":   diary_id,
+                "wing":        post.get("wing", DIARY_WING),
+                "room":        post.get("room", DIARY_ROOM),
+                "filed_at":    post.get("date", _diary_date_of(filepath.stem)),
+                "author":      post.get("author", ""),
                 "source_file": str(filepath),
             }],
         )
@@ -552,18 +614,35 @@ def _index_diary_day(date_str: str, filepath: Path) -> None:
 
 
 def diary_read(date: str | None = None, n_days: int = 3) -> str:
-    """Read diary entries. date = 'YYYY-MM-DD' or None for recent n_days."""
+    """Read diary entries across per-author files.
+
+    date='YYYY-MM-DD' returns every author's file for that day, merged. With no
+    date, returns the most recent `n_days` *calendar days* (all authors per day),
+    newest day first, authors A->Z within a day.
+    """
     if not DIARY_DIR.exists():
         return "No diary entries yet."
 
     if date:
-        f = DIARY_DIR / f"{date}.md"
-        return f.read_text(encoding="utf-8") if f.exists() else f"No entry for {date}."
+        files = sorted(DIARY_DIR.glob(f"{date}-*.md"))
+        legacy = DIARY_DIR / f"{date}.md"          # pre-split single-file days
+        if legacy.exists():
+            files = [legacy, *files]
+        if not files:
+            return f"No entry for {date}."
+        return "\n\n".join(f.read_text(encoding="utf-8") for f in files)
 
-    files = sorted(DIARY_DIR.glob("*.md"), reverse=True)[:n_days]
+    files = list(DIARY_DIR.glob("*.md"))
     if not files:
         return "No diary entries yet."
-    return "\n\n".join(f.read_text(encoding="utf-8") for f in files)
+    by_date: dict[str, list[Path]] = {}
+    for f in files:
+        by_date.setdefault(_diary_date_of(f.stem), []).append(f)
+    out: list[str] = []
+    for d in sorted(by_date, reverse=True)[:n_days]:      # newest day first
+        for f in sorted(by_date[d]):                       # authors A->Z within a day
+            out.append(f.read_text(encoding="utf-8"))
+    return "\n\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -639,9 +718,13 @@ def regenerate_closets() -> tuple[int, int]:
             clusters.setdefault(key, []).append((d["drawer_id"], d["content"]))
     if DIARY_DIR.exists():
         for f in DIARY_DIR.glob("*.md"):
-            date_str = f.stem
-            key = ("wing_claude", "diary")
-            clusters.setdefault(key, []).append((f"diary_{date_str}", f.read_text(encoding="utf-8")[:2000]))
+            try:
+                post = frontmatter.load(str(f))
+                wing, body = post.get("wing", DIARY_WING), post.content[:2000]
+            except Exception:
+                wing, body = DIARY_WING, f.read_text(encoding="utf-8")[:2000]
+            key = (wing, DIARY_ROOM)
+            clusters.setdefault(key, []).append((f"diary_{f.stem}", body))
 
     disk_ids = {closet_id(wing, room) for (wing, room) in clusters.keys()}
     indexed_ids = set(col.get(include=[])["ids"])
@@ -962,11 +1045,15 @@ def reindex_drawers() -> tuple[int, int]:
             continue
         _enqueue_drawer(d["drawer_id"], d["content"], d["wing"], d["room"], d["filed_at"], d["filepath"], d.get("author", ""))
 
-    # Diary days indexed as drawers (id = diary_YYYY-MM-DD)
+    # Diary day-files indexed as drawers (id = diary_ + filename stem)
     for f in (DIARY_DIR.glob("*.md") if DIARY_DIR.exists() else []):
-        date_str = f.stem
-        _enqueue_drawer(f"diary_{date_str}", f.read_text(encoding="utf-8"),
-                        "wing_claude", "diary", date_str, str(f))
+        try:
+            post = frontmatter.load(str(f))
+            body, wing = post.content, post.get("wing", DIARY_WING)
+            author, filed = post.get("author", ""), post.get("date", _diary_date_of(f.stem))
+        except Exception:
+            body, wing, author, filed = f.read_text(encoding="utf-8"), DIARY_WING, "", _diary_date_of(f.stem)
+        _enqueue_drawer(f"diary_{f.stem}", body, wing, DIARY_ROOM, filed, str(f), author)
 
     _flush()
     return upserted, len(orphans)

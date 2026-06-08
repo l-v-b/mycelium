@@ -1270,11 +1270,12 @@ def status() -> str:
     Returns:
         JSON with note_count, drawer_count, link_count, diary_days.
     """
-    from mycelium.vault import DRAWERS_DIR, DIARY_DIR, NOTES_DIR
+    from mycelium.vault import DRAWERS_DIR, DIARY_DIR, NOTES_DIR, _diary_date_of
 
     note_count   = len(list(NOTES_DIR.glob("*.md")))   if NOTES_DIR.exists()   else 0
     drawer_count = len(list(DRAWERS_DIR.glob("*.md"))) if DRAWERS_DIR.exists() else 0
-    diary_days   = len(list(DIARY_DIR.glob("*.md")))   if DIARY_DIR.exists()   else 0
+    # Files are per-author-per-day, so count distinct calendar dates, not files.
+    diary_days   = len({_diary_date_of(f.stem) for f in DIARY_DIR.glob("*.md")}) if DIARY_DIR.exists() else 0
 
     indexed_notes   = notes_collection().count()
     indexed_drawers = drawers_collection().count()
