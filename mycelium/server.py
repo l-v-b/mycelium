@@ -80,7 +80,12 @@ mcp = FastMCP(
         "in one call; synthesize across them yourself.\n"
         "\n"
         "CAPTURE:\n"
-        "- file() for verbatim content (user paste, log output, transcript).\n"
+        "- file(content, wing, room, source) for VERBATIM content ONLY — raw command "
+        "output, file/config contents, a user paste, a transcript excerpt. `source` "
+        "(REQUIRED) names where it was copied from. If you are composing prose from your "
+        "own understanding (SYMPTOM / ROOT CAUSE / FIX / DECISION headers YOU wrote), that "
+        "is a synthesis → use write_note, not file. Test: could you regenerate it "
+        "byte-for-byte by re-running a command or re-reading a file? If no, it's a note.\n"
         "- write_note(title, content, tags, intent) for settled conclusions and decisions. "
         "INTENT IS REQUIRED (v2.0.0+) — pass a non-empty string explaining WHY this note is being written "
         "(e.g. 'capturing the deployment decision from today's planning meeting'). It's stamped as "
@@ -390,30 +395,76 @@ def search(
 # Drawers (verbatim)
 # ---------------------------------------------------------------------------
 
+# Section headers an agent writes when it is *composing* prose (a synthesis),
+# not capturing raw output. Two or more distinct ones strongly imply the drawer
+# should have been a write_note. Used by _synthesis_nudge (advisory only).
+_SYNTHESIS_HEADERS = re.compile(
+    r"(?im)^\s*#*\s*(ROOT[\s-]?CAUSE|SYMPTOM|FIX|DECISION|RATIONALE|CONCLUSION|"
+    r"SUMMARY|ANALYSIS|FINDINGS?|TAKEAWAY|LESSONS?[\s-]?LEARNED|WHY)\b\s*[:\-—]",
+)
+# A `source` that names no concrete raw origin — the agent reached for a filler.
+_WEAK_SOURCE = re.compile(
+    r"(?i)^\s*(my |the |our )?(analysis|synthesis|understanding|investigation|"
+    r"summary|findings?|notes?|memory|recollection|knowledge|session|conversation)\.?\s*$"
+)
+
+
+def _synthesis_nudge(content: str, source: str) -> str | None:
+    """Non-blocking heuristic: warn when a drawer looks synthesised rather than
+    captured. NEVER blocks the write — the discretionary model stands (see the
+    verbatim-capture-problem decision); this only nudges toward write_note.
+    """
+    hits = {h.upper().replace(" ", "-").replace("--", "-")
+            for h in _SYNTHESIS_HEADERS.findall(content or "")}
+    weak_source = (not (source or "").strip()) or bool(_WEAK_SOURCE.match(source or ""))
+    if len(hits) >= 2 or (hits and weak_source):
+        return ("This looks synthesised — agent-authored section headers "
+                f"({', '.join(sorted(hits))}). If you composed it rather than copied it "
+                "from a named source, use write_note instead; drawers are for verbatim "
+                "captures.")
+    if weak_source:
+        return ("`source` is vague — name the raw origin (a command, file path, or paste) "
+                "so this drawer's verbatim-ness stays auditable. If there is no raw "
+                "source, it is probably a note.")
+    return None
+
+
 @mcp.tool()
 def file(
     content: str,
     wing: str,
     room: str,
+    source: str,
 ) -> str:
-    """Save verbatim content to the vault as a drawer.
+    """Save VERBATIM content to the vault as a drawer.
 
-    Use for raw captures: decisions, code, config, prompts, key exchanges,
-    meeting notes — anything you want stored verbatim without summarising.
-    Over-file rather than under-file; storage is cheap, lost context is not.
+    Drawer content must be COPIED FROM A SOURCE YOU CAN NAME — raw command
+    output, file/config contents, a user paste, a transcript excerpt. If you
+    are composing prose from your own understanding (section headers like
+    SYMPTOM / ROOT CAUSE / FIX / DECISION that YOU wrote), that is a synthesis
+    → use write_note, not file. Test: could you regenerate this byte-for-byte
+    by re-running a command or re-reading a file? If no, it's a note.
+
+    Over-file rather than under-file — but only RAW items; storage is cheap,
+    lost context is not.
 
     Args:
-        content: Verbatim text content to store.
+        content: Verbatim text content to store (copied, not composed).
         wing: Project or domain name (e.g. "mycelium", "rain", "personal").
         room: Aspect or sub-topic (e.g. "decisions", "code", "bugs").
+        source: Where this content was copied from — name the raw origin
+            (e.g. 'kubectl describe pod x -o yaml', 'paste from Liam',
+            'cat values.yaml', 'transcript turns 12-18'). If you can't name a
+            raw source, it's a synthesis → use write_note. Stamped into
+            frontmatter as `source` so verbatim-ness stays auditable.
 
     Returns:
-        Confirmation with drawer_id.
+        Confirmation with drawer_id (plus a nudge if the content looks synthesised).
 
     Writes are synchronous in all modes (pgvector backend): disk write +
     pgvector upsert happen inside this call.
     """
-    did, filepath = _vault_write_drawer(content, wing, room)
+    did, filepath = _vault_write_drawer(content, wing, room, source=source)
     _index_drawer(did, content, wing, room, str(filepath))
     try:
         _vault_update_closet_for_drawer(did, wing, room, content)
@@ -424,9 +475,14 @@ def file(
         "wing": wing,
         "room": room,
         "size_bytes": len(content.encode("utf-8")),
+        "source": source,
         "mode": "personal",
     })
-    return f"Filed: {did} → {wing}/{room}"
+    msg = f"Filed: {did} → {wing}/{room}"
+    nudge = _synthesis_nudge(content, source)
+    if nudge:
+        msg += f"\n⚠ {nudge}"
+    return msg
 
 
 @mcp.tool()
@@ -1315,11 +1371,14 @@ def _index_drawer(did: str, content: str, wing: str, room: str, filepath: str) -
     chunks = _chunk_content(content)
     total_chunks = len(chunks)
     now = datetime.now(timezone.utc).isoformat()
-    # Author provenance from the on-disk frontmatter (best-effort).
+    # Author + source provenance from the on-disk frontmatter (best-effort).
     try:
-        author = frontmatter.load(filepath).get("author", "") if filepath else ""
+        post = frontmatter.load(filepath) if filepath else None
+        author = post.get("author", "") if post else ""
+        source = post.get("source", "") if post else ""
     except Exception:
         author = ""
+        source = ""
     ids, docs, metas = [], [], []
     for i, chunk_text in enumerate(chunks):
         chunk_id = did if total_chunks == 1 else f"{did}__c{i}"
@@ -1334,6 +1393,7 @@ def _index_drawer(did: str, content: str, wing: str, room: str, filepath: str) -
             "filed_at":     now,
             "source_file":  filepath,
             "author":       author,
+            "source":       source,
         })
     col.upsert(ids=ids, documents=docs, metadatas=metas)
 

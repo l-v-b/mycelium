@@ -81,7 +81,7 @@ def test_check_duplicate_tool(client, settings, nonce, track):
     """check_duplicate is a pre-file probe over DRAWERS (content/wing/room),
     not notes. After filing content, checking the same content must flag it."""
     content = f"Numbat caching layer eviction policy probe {nonce}."
-    conf = client.call_raw("file", content=content, wing=E2E_WING, room="dup")
+    conf = client.call_raw("file", content=content, wing=E2E_WING, room="dup", source="e2e probe")
     track.drawer(parse_id(conf, "drawer"))
     assert poll_until(
         lambda: drawer_is_searchable(client, "numbat caching eviction policy", nonce),

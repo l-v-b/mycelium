@@ -113,7 +113,7 @@ def _warmup(settings: Settings):
     token = "warmup" + _uuid.uuid4().hex
     did = None
     try:
-        conf = c.call_raw("file", content=f"warmup {token}", wing=E2E_WING, room="warmup")
+        conf = c.call_raw("file", content=f"warmup {token}", wing=E2E_WING, room="warmup", source="e2e probe")
         did = parse_id(conf, "drawer")
         poll_until(lambda: drawer_is_searchable(c, "warmup", token), timeout=180)
     except Exception:

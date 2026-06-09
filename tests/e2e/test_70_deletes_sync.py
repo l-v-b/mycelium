@@ -25,7 +25,7 @@ def test_delete_drawer_is_immediate(client, settings, nonce, track):
     """A committed drawer disappears from search promptly after delete — no
     multi-minute queue lag (deletes don't go through the worker)."""
     conf = client.call_raw("file", content=f"sync-delete verbatim {nonce}",
-                          wing="_e2e", room="del")
+                          wing="_e2e", room="del", source="e2e probe")
     did = parse_id(conf, "drawer")
     assert poll_until(
         lambda: drawer_is_searchable(client, "sync-delete verbatim", nonce),
