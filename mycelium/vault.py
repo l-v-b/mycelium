@@ -282,11 +282,15 @@ def write_drawer(
     room: str,
     author: str | None = None,
     committed: bool = True,
+    source: str = "",
 ) -> tuple[str, Path]:
     """Write a verbatim drawer to disk and return (drawer_id, filepath).
 
     See write_note for `author` / `committed` semantics. Drawers are verbatim
     captures and don't accept `source_intent` — no synthesis reasoning to attach.
+    `source` names the raw origin the content was copied from (command, file,
+    paste, transcript); it is stamped into frontmatter so verbatim-ness stays
+    auditable. It does NOT feed drawer_id — provenance, not identity.
     """
     from mycelium.write_path.frontmatter import stamp_author, stamp_committed
 
@@ -302,6 +306,8 @@ def write_drawer(
         "room":     room,
         "filed_at": now,
     }
+    if source:
+        fields["source"] = source
     stamp_author(fields, author)
     stamp_committed(fields, committed=committed)
 

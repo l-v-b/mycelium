@@ -57,7 +57,7 @@ def test_note_provenance_stamped_on_disk(client, settings, require_whitebox, non
 def test_drawer_provenance_stamped_on_disk(client, require_whitebox, nonce, track):
     intro = require_whitebox
     conf = client.call_raw("file", content=f"provenance drawer {nonce}",
-                          wing="_e2e", room="prov")
+                          wing="_e2e", room="prov", source="e2e probe")
     did = parse_id(conf, "drawer")
     track.drawer(did)
     fm = poll_until(lambda: intro.drawer_frontmatter(did) is not None, timeout=30)

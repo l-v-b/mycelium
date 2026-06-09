@@ -67,7 +67,7 @@ def test_write_note_roundtrip_via_query_notes(client, settings, nonce, track):
 
 def test_file_drawer_roundtrip_via_search(client, settings, nonce, track):
     body = f"Verbatim capture for e2e. Marsupial migration log token {nonce}."
-    conf = client.call_raw("file", content=body, wing=E2E_WING, room="roundtrip")
+    conf = client.call_raw("file", content=body, wing=E2E_WING, room="roundtrip", source="e2e probe")
     did = parse_id(conf, "drawer")
     assert did, f"no drawer id in confirmation: {conf!r}"
     track.drawer(did)
@@ -93,6 +93,7 @@ def test_context_surfaces_both_notes_and_drawers(client, settings, nonce, track)
     track.note(parse_id(nconf, "note"))
     dconf = client.call_raw(
         "file", content=f"platypus routing verbatim {nonce}", wing=E2E_WING, room="ctx",
+        source="e2e probe",
     )
     track.drawer(parse_id(dconf, "drawer"))
 
