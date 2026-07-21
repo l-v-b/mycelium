@@ -894,7 +894,9 @@ def list_todos(
             "status":     n["status"],
             "tags":       n.get("tags", []),
             "author":     n.get("author", ""),
-            "updated_at": n.get("updated_at") or n.get("created_at") or "",
+            # YAML parses an unquoted `updated:` into a datetime, which is not
+            # JSON-serialisable — coerce whatever frontmatter yielded.
+            "updated_at": str(n.get("updated_at") or n.get("created_at") or ""),
             "filepath":   n.get("filepath"),
             "subtasks_done":  sum(1 for s in subtasks if s["done"]),
             "subtasks_total": len(subtasks),
