@@ -206,6 +206,18 @@ def test_default_status_is_the_unfinished_set(todos, notes_dir):
     assert [t["title"] for t in out["todos"]] == ["B", "C", "A"]
 
 
+def test_open_means_literally_open_not_the_unfinished_set(todos, notes_dir):
+    """`open` is one of the five canonical values, so it must never be treated
+    as a synonym for "everything outstanding" — a caller asking for `open` gets
+    exactly the notes whose frontmatter says `status: open`. This is the
+    grep-equivalence the read-API TODO set as its acceptance criterion."""
+    _write(notes_dir, "a", title="A", status="open")
+    _write(notes_dir, "b", title="B", status="in-progress")
+    _write(notes_dir, "c", title="C", status="blocked")
+    assert [t["title"] for t in todos(status="open")["todos"]] == ["A"]
+    assert todos(status="unfinished")["matched"] == 3
+
+
 def test_status_any_includes_closed_work(todos, notes_dir):
     _write(notes_dir, "a", title="A", status="open")
     _write(notes_dir, "b", title="B", status="done")

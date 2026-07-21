@@ -48,7 +48,7 @@ from mycelium.vault import (
     list_tracked_notes as _vault_list_tracked_notes,
     list_wings as _vault_list_wings,
     load_note as _vault_load_note,
-    OPEN_STATUSES as _OPEN_STATUSES,
+    UNFINISHED_STATUSES as _UNFINISHED_STATUSES,
     STATUS_ORDER as _STATUS_ORDER,
     note_id as _note_id_fn,
     slugify as _slugify,
@@ -833,7 +833,7 @@ def query_notes(query: str, n_results: int = 10, _caller: str = "agent") -> str:
 
 @mcp.tool()
 def list_todos(
-    status: str = "open",
+    status: str = "unfinished",
     tags: Optional[list[str]] = None,
     author: Optional[str] = None,
     include_subtasks: bool = True,
@@ -849,11 +849,13 @@ def list_todos(
     Notes without a `status` are synthesis, not work items, and never appear.
 
     Args:
-        status: Which states to include. A single value, a comma-separated
-            list ("open,in-progress"), or:
-              "open" (default) — the unfinished set: in-progress + blocked + open
-              "any"            — every note with a status set, including closed
+        status: Which states to include. A canonical value, a comma-separated
+            list of them ("open,in-progress"), or one of two aggregates:
+              "unfinished" (default) — in-progress + blocked + open
+              "any"                  — every note with a status set, incl. closed
             Canonical values: "open" | "in-progress" | "blocked" | "done" | "wont-fix".
+            Note "open" means literally `status: open`, NOT the unfinished set —
+            use "unfinished" for everything still outstanding.
         tags: Keep only notes carrying at least one of these tags.
         author: Keep only notes by this author.
         include_subtasks: Include the per-note checkbox breakdown. Set False
@@ -873,9 +875,11 @@ def list_todos(
     raw = (status or "").strip().lower()
     if raw in ("any", "all", "*"):
         wanted: Optional[set[str]] = None
-    elif raw in ("", "open"):
-        wanted = set(_OPEN_STATUSES)
+    elif raw in ("", "unfinished"):
+        wanted = set(_UNFINISHED_STATUSES)
     else:
+        # Canonical values only — "open" is the literal status, never a synonym
+        # for the unfinished set, so a caller asking for `open` gets `open`.
         wanted = {s.strip() for s in raw.split(",") if s.strip()}
 
     tracked = _vault_list_tracked_notes(tags=tags, author=author)
