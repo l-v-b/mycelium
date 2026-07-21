@@ -17,7 +17,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import frontmatter
 
@@ -270,6 +270,103 @@ def delete_note(nid: str) -> bool:
             _git_commit(f"delete note: {note['title']}")
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Work tracking (frontmatter `status` + `## TODO` checkboxes)
+# ---------------------------------------------------------------------------
+
+# Canonical enum from the todo-tracking convention (2026-05-21). Ordered for
+# display: what's moving first, what's stuck next, what's not started after
+# that, closed work last.
+STATUS_ORDER = ("in-progress", "blocked", "open", "wont-fix", "done")
+OPEN_STATUSES = ("in-progress", "blocked", "open")
+
+_CHECKBOX_RE = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*\S)\s*$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def parse_subtasks(content: str) -> list[dict[str, Any]]:
+    """Extract markdown checkbox sub-tasks from a note body.
+
+    Frontmatter `status` is the state of the whole note; checkboxes are the
+    breakdown inside it. Scans the whole body rather than only a `## TODO`
+    heading — checklists in the vault sit under various headings, and a
+    checkbox means the same thing wherever it appears.
+
+    Fenced code blocks are skipped: several notes document the convention by
+    showing an example checklist, and those examples are not real work.
+    """
+    subtasks: list[dict[str, Any]] = []
+    in_fence = False
+    for line in content.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _CHECKBOX_RE.match(line)
+        if m:
+            subtasks.append({"done": m.group(1).lower() == "x", "text": m.group(2)})
+    return subtasks
+
+
+def list_notes_by_status(
+    statuses: Iterable[str] | None = None,
+    tags: Iterable[str] | None = None,
+    author: str | None = None,
+) -> list[dict[str, Any]]:
+    """Enumerate work-tracked notes straight from disk.
+
+    Disk is the source of truth. The ChromaDB `status` metadata only carries
+    notes indexed since the field landed, so a metadata-filter query can
+    silently miss notes a disk-side edit or backfill touched — and a silent
+    miss is the exact failure this call exists to prevent. Globbing a few
+    hundred note files is cheap, so enumerate exhaustively and filter in
+    Python.
+
+    Args:
+        statuses: Restrict to these status values. None means "any note that
+            has a status set at all" (notes with no status aren't work items).
+        tags: Keep only notes carrying at least one of these tags.
+        author: Keep only notes by this author.
+
+    Returns:
+        Notes as load_note() dicts plus a "subtasks" list, ordered by
+        STATUS_ORDER then most-recently-updated first.
+    """
+    if not NOTES_DIR.exists():
+        return []
+
+    want_status = {s.lower() for s in statuses} if statuses is not None else None
+    want_tags = {t.lower() for t in tags} if tags else None
+
+    matched: list[dict[str, Any]] = []
+    for f in NOTES_DIR.glob("*.md"):
+        note = load_note(f)
+        if not note:
+            continue
+        status = (note.get("status") or "").strip().lower()
+        if not status:
+            continue
+        if want_status is not None and status not in want_status:
+            continue
+        if want_tags and not {str(t).lower() for t in note.get("tags", [])} & want_tags:
+            continue
+        if author and note.get("author", "") != author:
+            continue
+        note["status"] = status
+        note["subtasks"] = parse_subtasks(note.get("content", ""))
+        matched.append(note)
+
+    def _rank(n: dict[str, Any]) -> int:
+        s = n["status"]
+        return STATUS_ORDER.index(s) if s in STATUS_ORDER else len(STATUS_ORDER)
+
+    # Two stable passes: newest-first within each status band.
+    matched.sort(key=lambda n: str(n.get("updated_at") or n.get("created_at") or ""), reverse=True)
+    matched.sort(key=_rank)
+    return matched
 
 
 # ---------------------------------------------------------------------------

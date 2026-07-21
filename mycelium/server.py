@@ -3,7 +3,7 @@
 Tool surface (Phase 1 — all tools visible to main agent):
   Context:   context
   Drawers:   file, get_drawer, list_drawers, list_rooms, list_wings, check_duplicate, update_drawer, delete_drawer
-  Notes:     write_note, query_notes
+  Notes:     write_note, query_notes, list_todos
   Links:     add_link, query_links, find_links, delete_link
   Diary:     diary_write, diary_read
   Utility:   search, status
@@ -44,9 +44,11 @@ from mycelium.vault import (
     get_drawer as _vault_get_drawer,
     link_id as _link_id_fn,
     list_drawers as _vault_list_drawers,
+    list_notes_by_status as _vault_list_notes_by_status,
     list_rooms as _vault_list_rooms,
     list_wings as _vault_list_wings,
     load_note as _vault_load_note,
+    OPEN_STATUSES as _OPEN_STATUSES,
     note_id as _note_id_fn,
     slugify as _slugify,
     update_closet_for_drawer as _vault_update_closet_for_drawer,
@@ -822,6 +824,84 @@ def query_notes(query: str, n_results: int = 10, _caller: str = "agent") -> str:
     )
 
     return json.dumps({"notes": notes, "total_indexed": count}, indent=2)
+
+
+@mcp.tool()
+def list_todos(
+    status: str = "open",
+    tags: Optional[list[str]] = None,
+    author: Optional[str] = None,
+    include_subtasks: bool = True,
+    n_results: int = 100,
+) -> str:
+    """List tracked work items — notes carrying a frontmatter `status`.
+
+    Exhaustive, not semantic. Use this (never query_notes) to answer "what's
+    open?", "what am I working on?", "what's blocked?" — a similarity search
+    ranks by topic and will silently omit tracked notes that don't happen to
+    match the query wording. This enumerates every note on disk.
+
+    Notes without a `status` are synthesis, not work items, and never appear.
+
+    Args:
+        status: Which states to include. A single value, a comma-separated
+            list ("open,in-progress"), or:
+              "open" (default) — the unfinished set: in-progress + blocked + open
+              "any"            — every note with a status set, including closed
+            Canonical values: "open" | "in-progress" | "blocked" | "done" | "wont-fix".
+        tags: Keep only notes carrying at least one of these tags.
+        author: Keep only notes by this author.
+        include_subtasks: Include the per-note checkbox breakdown. Set False
+            for a compact roll-up (the done/total counts are always returned).
+        n_results: Max notes returned (default 100). Ordered in-progress →
+            blocked → open → wont-fix → done, newest first within each band,
+            so a truncated list keeps the most actionable work.
+
+    Returns:
+        JSON with "todos", "counts_by_status" (over everything matched before
+        truncation), "total_tracked", and "truncated".
+    """
+    raw = (status or "").strip().lower()
+    if raw in ("any", "all", "*"):
+        statuses = None
+    elif raw in ("", "open"):
+        statuses = list(_OPEN_STATUSES)
+    else:
+        statuses = [s.strip() for s in raw.split(",") if s.strip()]
+
+    matched = _vault_list_notes_by_status(statuses=statuses, tags=tags, author=author)
+
+    counts: dict[str, int] = {}
+    for n in matched:
+        counts[n["status"]] = counts.get(n["status"], 0) + 1
+
+    todos = []
+    for n in matched[: max(0, n_results)]:
+        subtasks = n.get("subtasks", [])
+        entry = {
+            "note_id":    n["note_id"],
+            "title":      n["title"],
+            "status":     n["status"],
+            "tags":       n.get("tags", []),
+            "author":     n.get("author", ""),
+            "updated_at": n.get("updated_at") or n.get("created_at") or "",
+            "filepath":   n.get("filepath"),
+            "subtasks_done":  sum(1 for s in subtasks if s["done"]),
+            "subtasks_total": len(subtasks),
+        }
+        if include_subtasks and subtasks:
+            entry["subtasks"] = subtasks
+        todos.append(entry)
+
+    # Deliberately not run through log_retrieval: that JSONL is the baseline
+    # for scope-aware retrieval quality, and a deterministic enumeration with
+    # no query and no distances would skew it.
+    return json.dumps({
+        "todos":            todos,
+        "counts_by_status": counts,
+        "total_tracked":    len(matched),
+        "truncated":        len(matched) > len(todos),
+    }, indent=2)
 
 
 @mcp.tool()
