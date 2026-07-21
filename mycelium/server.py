@@ -639,8 +639,11 @@ def write_note(
         source_memories: Drawer IDs this note was derived from.
         status: Optional. Set when this note represents tracked work.
             Canonical values: "open" | "in-progress" | "done" | "wont-fix" | "blocked".
-            Leave unset (None) for synthesis notes that aren't work items, or
-            on upsert to preserve the existing status. Pass "" to clear.
+            Enforced — any other value raises ValueError, because a status
+            outside the enum falls through every list_todos filter and makes
+            the note invisible to "what's open?". Leave unset (None) for
+            synthesis notes that aren't work items, or on upsert to preserve
+            the existing status. Pass "" to clear.
 
     Returns:
         Confirmation with note_id and file path. Includes a Warning line if a
@@ -652,7 +655,8 @@ def write_note(
     pgvector upsert happen inside this call.
 
     Raises:
-        ValueError: if `intent` is empty or whitespace-only.
+        ValueError: if `intent` is empty or whitespace-only, or if `status` is
+            set to a value outside the canonical enum.
     """
     if not intent or not intent.strip():
         raise ValueError(

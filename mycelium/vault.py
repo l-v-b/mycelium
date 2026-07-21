@@ -179,7 +179,7 @@ def write_note(
     `status` is for notes that represent tracked work. Pass None to leave the
     existing value alone on upsert (or to omit the field on first write).
     Pass "" to clear. Canonical values: "open" | "in-progress" | "done" |
-    "wont-fix" | "blocked".
+    "wont-fix" | "blocked" — anything else raises ValueError.
 
     `created` is preserved across upserts (read from existing file if present).
 
@@ -199,6 +199,11 @@ def write_note(
 
     tags = tags or []
     source_memories = source_memories or []
+
+    # Only the incoming value is checked. A note already carrying a legacy
+    # status must stay editable — failing its next upsert would strand it.
+    if status:
+        status = validate_status(status)
 
     slug  = slugify(title)
     nid   = note_id(slug)
@@ -284,6 +289,25 @@ OPEN_STATUSES = ("in-progress", "blocked", "open")
 
 _CHECKBOX_RE = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*\S)\s*$")
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def validate_status(value: str) -> str:
+    """Normalise a status to the canonical enum, or raise.
+
+    The convention (2026-05-21) left the enum documented-but-unenforced and
+    said to add validation "if we see drift". We saw drift: by 2026-07 the
+    vault held 15 distinct values across 240 tracked notes, and the extras
+    (`active`, `backlog`, `draft`, …) fell outside every status filter, which
+    made "what's open?" quietly wrong. This is that validation.
+    """
+    s = str(value).strip().lower()
+    if s not in STATUS_ORDER:
+        raise ValueError(
+            f"Unknown status {value!r}. Canonical values: "
+            f"{' | '.join(sorted(STATUS_ORDER))}. Pass \"\" to clear the field, "
+            "or leave it unset for synthesis notes that aren't work items."
+        )
+    return s
 
 
 def parse_subtasks(content: str) -> list[dict[str, Any]]:

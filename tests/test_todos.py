@@ -59,7 +59,53 @@ def test_parse_subtasks_ignores_plain_bullets():
     ]
 
 
-# --- list_notes_by_status --------------------------------------------------
+# --- validate_status -------------------------------------------------------
+
+@pytest.mark.parametrize("value", ["open", "in-progress", "blocked", "done", "wont-fix"])
+def test_validate_status_accepts_canonical(value):
+    assert vault.validate_status(value) == value
+
+
+@pytest.mark.parametrize("value", [" Open ", "IN-PROGRESS", "Done"])
+def test_validate_status_normalises_case_and_space(value):
+    assert vault.validate_status(value) == value.strip().lower()
+
+
+@pytest.mark.parametrize("value", ["active", "backlog", "closed", "shipped", "wip"])
+def test_validate_status_rejects_drift(value):
+    with pytest.raises(ValueError, match="Unknown status"):
+        vault.validate_status(value)
+
+
+def test_write_note_rejects_non_canonical_status(notes_dir):
+    with pytest.raises(ValueError, match="Unknown status"):
+        vault.write_note("A title", "body", status="active")
+    assert list(notes_dir.glob("*.md")) == []
+
+
+def test_write_note_accepts_canonical_status(notes_dir):
+    vault.write_note("A title", "body", status="in-progress")
+    (note,) = vault.list_tracked_notes()
+    assert note["status"] == "in-progress"
+
+
+def test_upsert_of_a_legacy_note_is_not_blocked(notes_dir):
+    """A note already carrying a drifted status must stay editable — the guard
+    checks the incoming value, not what's on disk."""
+    _write(notes_dir, "a-title", title="A title", status="active")
+    vault.write_note("A title", "new body", status=None)
+    (note,) = vault.list_tracked_notes()
+    assert note["status"] == "active"
+    assert "new body" in note["content"]
+
+
+def test_clearing_status_still_works(notes_dir):
+    _write(notes_dir, "a-title", title="A title", status="open")
+    vault.write_note("A title", "body", status="")
+    assert vault.list_tracked_notes() == []
+
+
+# --- list_tracked_notes ----------------------------------------------------
 
 def test_notes_without_status_are_not_work_items(notes_dir):
     _write(notes_dir, "synthesis", title="Some synthesis", status=None)
