@@ -285,7 +285,11 @@ def delete_note(nid: str) -> bool:
 # display: what's moving first, what's stuck next, what's not started after
 # that, closed work last.
 STATUS_ORDER = ("in-progress", "blocked", "open", "wont-fix", "done")
-OPEN_STATUSES = ("in-progress", "blocked", "open")
+
+# The "still outstanding" set. Named UNFINISHED, not OPEN, because `open` is
+# itself one of the five values — conflating the two makes a caller asking for
+# `open` silently get in-progress and blocked notes too.
+UNFINISHED_STATUSES = ("in-progress", "blocked", "open")
 
 _CHECKBOX_RE = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*\S)\s*$")
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
