@@ -3,7 +3,7 @@
 Tool surface (Phase 1 — all tools visible to main agent):
   Context:   context
   Drawers:   file, get_drawer, list_drawers, list_rooms, list_wings, check_duplicate, update_drawer, delete_drawer
-  Notes:     write_note, query_notes
+  Notes:     write_note, query_notes, list_todos
   Links:     add_link, query_links, find_links, delete_link
   Diary:     diary_write, diary_read
   Utility:   search, status
@@ -45,8 +45,11 @@ from mycelium.vault import (
     link_id as _link_id_fn,
     list_drawers as _vault_list_drawers,
     list_rooms as _vault_list_rooms,
+    list_tracked_notes as _vault_list_tracked_notes,
     list_wings as _vault_list_wings,
     load_note as _vault_load_note,
+    OPEN_STATUSES as _OPEN_STATUSES,
+    STATUS_ORDER as _STATUS_ORDER,
     note_id as _note_id_fn,
     slugify as _slugify,
     update_closet_for_drawer as _vault_update_closet_for_drawer,
@@ -636,8 +639,11 @@ def write_note(
         source_memories: Drawer IDs this note was derived from.
         status: Optional. Set when this note represents tracked work.
             Canonical values: "open" | "in-progress" | "done" | "wont-fix" | "blocked".
-            Leave unset (None) for synthesis notes that aren't work items, or
-            on upsert to preserve the existing status. Pass "" to clear.
+            Enforced — any other value raises ValueError, because a status
+            outside the enum falls through every list_todos filter and makes
+            the note invisible to "what's open?". Leave unset (None) for
+            synthesis notes that aren't work items, or on upsert to preserve
+            the existing status. Pass "" to clear.
 
     Returns:
         Confirmation with note_id and file path. Includes a Warning line if a
@@ -649,7 +655,8 @@ def write_note(
     pgvector upsert happen inside this call.
 
     Raises:
-        ValueError: if `intent` is empty or whitespace-only.
+        ValueError: if `intent` is empty or whitespace-only, or if `status` is
+            set to a value outside the canonical enum.
     """
     if not intent or not intent.strip():
         raise ValueError(
@@ -822,6 +829,104 @@ def query_notes(query: str, n_results: int = 10, _caller: str = "agent") -> str:
     )
 
     return json.dumps({"notes": notes, "total_indexed": count}, indent=2)
+
+
+@mcp.tool()
+def list_todos(
+    status: str = "open",
+    tags: Optional[list[str]] = None,
+    author: Optional[str] = None,
+    include_subtasks: bool = True,
+    n_results: int = 100,
+) -> str:
+    """List tracked work items — notes carrying a frontmatter `status`.
+
+    Exhaustive, not semantic. Use this (never query_notes) to answer "what's
+    open?", "what am I working on?", "what's blocked?" — a similarity search
+    ranks by topic and will silently omit tracked notes that don't happen to
+    match the query wording. This enumerates every note on disk.
+
+    Notes without a `status` are synthesis, not work items, and never appear.
+
+    Args:
+        status: Which states to include. A single value, a comma-separated
+            list ("open,in-progress"), or:
+              "open" (default) — the unfinished set: in-progress + blocked + open
+              "any"            — every note with a status set, including closed
+            Canonical values: "open" | "in-progress" | "blocked" | "done" | "wont-fix".
+        tags: Keep only notes carrying at least one of these tags.
+        author: Keep only notes by this author.
+        include_subtasks: Include the per-note checkbox breakdown. Set False
+            for a compact roll-up (the done/total counts are always returned).
+        n_results: Max notes returned (default 100). Ordered in-progress →
+            blocked → open → wont-fix → done, newest first within each band,
+            so a truncated list keeps the most actionable work.
+
+    Returns:
+        JSON with "todos", "counts_by_status" (the census over ALL tracked
+        notes, not just the ones returned), "total_tracked", "matched",
+        "truncated", and — when the vault holds statuses outside the canonical
+        enum — "non_canonical_statuses". That last field matters: a note
+        marked `active` is real open work that the default filter does not
+        return, so callers must not read an empty result as "nothing open".
+    """
+    raw = (status or "").strip().lower()
+    if raw in ("any", "all", "*"):
+        wanted: Optional[set[str]] = None
+    elif raw in ("", "open"):
+        wanted = set(_OPEN_STATUSES)
+    else:
+        wanted = {s.strip() for s in raw.split(",") if s.strip()}
+
+    tracked = _vault_list_tracked_notes(tags=tags, author=author)
+
+    # Census over everything tracked — computed before filtering so the caller
+    # can see statuses the filter excluded.
+    counts: dict[str, int] = {}
+    for n in tracked:
+        counts[n["status"]] = counts.get(n["status"], 0) + 1
+    non_canonical = {s: c for s, c in counts.items() if s not in _STATUS_ORDER}
+
+    matched = [n for n in tracked if wanted is None or n["status"] in wanted]
+
+    todos = []
+    for n in matched[: max(0, n_results)]:
+        subtasks = n.get("subtasks", [])
+        entry = {
+            "note_id":    n["note_id"],
+            "title":      n["title"],
+            "status":     n["status"],
+            "tags":       n.get("tags", []),
+            "author":     n.get("author", ""),
+            # YAML parses an unquoted `updated:` into a datetime, which is not
+            # JSON-serialisable — coerce whatever frontmatter yielded.
+            "updated_at": str(n.get("updated_at") or n.get("created_at") or ""),
+            "filepath":   n.get("filepath"),
+            "subtasks_done":  sum(1 for s in subtasks if s["done"]),
+            "subtasks_total": len(subtasks),
+        }
+        if include_subtasks and subtasks:
+            entry["subtasks"] = subtasks
+        todos.append(entry)
+
+    # Deliberately not run through log_retrieval: that JSONL is the baseline
+    # for scope-aware retrieval quality, and a deterministic enumeration with
+    # no query and no distances would skew it.
+    payload: dict[str, Any] = {
+        "todos":            todos,
+        "counts_by_status": counts,
+        "total_tracked":    len(tracked),
+        "matched":          len(matched),
+        "truncated":        len(matched) > len(todos),
+    }
+    if non_canonical:
+        payload["non_canonical_statuses"] = non_canonical
+        payload["note"] = (
+            "Statuses outside the canonical enum are in use and are NOT included "
+            "in the default 'open' filter. Pass status='any' or name them "
+            "explicitly to see those notes."
+        )
+    return json.dumps(payload, indent=2)
 
 
 @mcp.tool()

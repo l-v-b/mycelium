@@ -17,7 +17,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import frontmatter
 
@@ -179,7 +179,7 @@ def write_note(
     `status` is for notes that represent tracked work. Pass None to leave the
     existing value alone on upsert (or to omit the field on first write).
     Pass "" to clear. Canonical values: "open" | "in-progress" | "done" |
-    "wont-fix" | "blocked".
+    "wont-fix" | "blocked" — anything else raises ValueError.
 
     `created` is preserved across upserts (read from existing file if present).
 
@@ -199,6 +199,11 @@ def write_note(
 
     tags = tags or []
     source_memories = source_memories or []
+
+    # Only the incoming value is checked. A note already carrying a legacy
+    # status must stay editable — failing its next upsert would strand it.
+    if status:
+        status = validate_status(status)
 
     slug  = slugify(title)
     nid   = note_id(slug)
@@ -270,6 +275,121 @@ def delete_note(nid: str) -> bool:
             _git_commit(f"delete note: {note['title']}")
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Work tracking (frontmatter `status` + `## TODO` checkboxes)
+# ---------------------------------------------------------------------------
+
+# Canonical enum from the todo-tracking convention (2026-05-21). Ordered for
+# display: what's moving first, what's stuck next, what's not started after
+# that, closed work last.
+STATUS_ORDER = ("in-progress", "blocked", "open", "wont-fix", "done")
+OPEN_STATUSES = ("in-progress", "blocked", "open")
+
+_CHECKBOX_RE = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*\S)\s*$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def validate_status(value: str) -> str:
+    """Normalise a status to the canonical enum, or raise.
+
+    The convention (2026-05-21) left the enum documented-but-unenforced and
+    said to add validation "if we see drift". We saw drift: by 2026-07 the
+    vault held 15 distinct values across 240 tracked notes, and the extras
+    (`active`, `backlog`, `draft`, …) fell outside every status filter, which
+    made "what's open?" quietly wrong. This is that validation.
+    """
+    s = str(value).strip().lower()
+    if s not in STATUS_ORDER:
+        raise ValueError(
+            f"Unknown status {value!r}. Canonical values: "
+            f"{' | '.join(sorted(STATUS_ORDER))}. Pass \"\" to clear the field, "
+            "or leave it unset for synthesis notes that aren't work items."
+        )
+    return s
+
+
+def parse_subtasks(content: str) -> list[dict[str, Any]]:
+    """Extract markdown checkbox sub-tasks from a note body.
+
+    Frontmatter `status` is the state of the whole note; checkboxes are the
+    breakdown inside it. Scans the whole body rather than only a `## TODO`
+    heading — checklists in the vault sit under various headings, and a
+    checkbox means the same thing wherever it appears.
+
+    Fenced code blocks are skipped: several notes document the convention by
+    showing an example checklist, and those examples are not real work.
+    """
+    subtasks: list[dict[str, Any]] = []
+    in_fence = False
+    for line in content.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _CHECKBOX_RE.match(line)
+        if m:
+            subtasks.append({"done": m.group(1).lower() == "x", "text": m.group(2)})
+    return subtasks
+
+
+def list_tracked_notes(
+    tags: Iterable[str] | None = None,
+    author: str | None = None,
+) -> list[dict[str, Any]]:
+    """Enumerate every work-tracked note (one carrying a `status`) from disk.
+
+    Disk is the source of truth. The ChromaDB `status` metadata only carries
+    notes indexed since the field landed, so a metadata-filter query can
+    silently miss notes a disk-side edit or backfill touched — and a silent
+    miss is the exact failure this call exists to prevent. Globbing a few
+    hundred note files is cheap, so enumerate exhaustively.
+
+    Status filtering is deliberately left to the caller: returning every
+    tracked note in one pass is what lets callers report the statuses actually
+    in use, including ones outside STATUS_ORDER. A filter applied here would
+    hide that drift instead of exposing it.
+
+    Args:
+        tags: Keep only notes carrying at least one of these tags.
+        author: Keep only notes by this author.
+
+    Returns:
+        Notes as load_note() dicts plus a "subtasks" list, ordered by
+        STATUS_ORDER then most-recently-updated first. Statuses outside
+        STATUS_ORDER sort last but are never dropped.
+    """
+    if not NOTES_DIR.exists():
+        return []
+
+    want_tags = {t.lower() for t in tags} if tags else None
+
+    matched: list[dict[str, Any]] = []
+    for f in NOTES_DIR.glob("*.md"):
+        note = load_note(f)
+        if not note:
+            continue
+        status = (note.get("status") or "").strip().lower()
+        if not status:
+            continue
+        if want_tags and not {str(t).lower() for t in note.get("tags", [])} & want_tags:
+            continue
+        if author and note.get("author", "") != author:
+            continue
+        note["status"] = status
+        note["subtasks"] = parse_subtasks(note.get("content", ""))
+        matched.append(note)
+
+    def _rank(n: dict[str, Any]) -> int:
+        s = n["status"]
+        return STATUS_ORDER.index(s) if s in STATUS_ORDER else len(STATUS_ORDER)
+
+    # Two stable passes: newest-first within each status band.
+    matched.sort(key=lambda n: str(n.get("updated_at") or n.get("created_at") or ""), reverse=True)
+    matched.sort(key=_rank)
+    return matched
 
 
 # ---------------------------------------------------------------------------
