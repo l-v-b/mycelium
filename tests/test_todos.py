@@ -64,41 +64,43 @@ def test_parse_subtasks_ignores_plain_bullets():
 def test_notes_without_status_are_not_work_items(notes_dir):
     _write(notes_dir, "synthesis", title="Some synthesis", status=None)
     _write(notes_dir, "tracked", title="Tracked thing", status="open")
-    got = vault.list_notes_by_status()
+    got = vault.list_tracked_notes()
     assert [n["title"] for n in got] == ["Tracked thing"]
 
 
 def test_default_returns_every_status(notes_dir):
     _write(notes_dir, "a", title="A", status="open")
     _write(notes_dir, "b", title="B", status="done")
-    assert {n["title"] for n in vault.list_notes_by_status()} == {"A", "B"}
+    assert {n["title"] for n in vault.list_tracked_notes()} == {"A", "B"}
 
 
-def test_status_filter(notes_dir):
-    _write(notes_dir, "a", title="A", status="open")
-    _write(notes_dir, "b", title="B", status="done")
-    _write(notes_dir, "c", title="C", status="blocked")
-    got = vault.list_notes_by_status(statuses=vault.OPEN_STATUSES)
-    assert {n["title"] for n in got} == {"A", "C"}
-
-
-def test_status_matching_is_case_insensitive(notes_dir):
+def test_status_is_normalised_to_lowercase(notes_dir):
     _write(notes_dir, "a", title="A", status="In-Progress")
-    got = vault.list_notes_by_status(statuses=["in-progress"])
-    assert [n["status"] for n in got] == ["in-progress"]
+    assert [n["status"] for n in vault.list_tracked_notes()] == ["in-progress"]
+
+
+def test_non_canonical_statuses_are_kept_not_dropped(notes_dir):
+    """The vault has real notes on `active`/`backlog`; enumeration must return
+    them so the drift is visible to the caller."""
+    _write(notes_dir, "a", title="A", status="open")
+    _write(notes_dir, "b", title="B", status="active")
+    got = vault.list_tracked_notes()
+    assert {n["title"] for n in got} == {"A", "B"}
+    # ...and sort after the canonical ones rather than crashing the ranker.
+    assert [n["title"] for n in got] == ["A", "B"]
 
 
 def test_tag_filter_matches_any_tag(notes_dir):
     _write(notes_dir, "a", title="A", status="open", tags=["mycelium", "todo"])
     _write(notes_dir, "b", title="B", status="open", tags=["whelmed"])
-    got = vault.list_notes_by_status(tags=["whelmed"])
+    got = vault.list_tracked_notes(tags=["whelmed"])
     assert [n["title"] for n in got] == ["B"]
 
 
 def test_author_filter(notes_dir):
     _write(notes_dir, "a", title="A", status="open", author="liam")
     _write(notes_dir, "b", title="B", status="open", author="someone-else")
-    got = vault.list_notes_by_status(author="liam")
+    got = vault.list_tracked_notes(author="liam")
     assert [n["title"] for n in got] == ["A"]
 
 
@@ -114,7 +116,7 @@ def test_ordering_is_status_band_then_newest_first(notes_dir):
     _write(notes_dir, "blocked", title="blocked one", status="blocked",
            updated="2026-01-01T00:00:00+00:00")
 
-    assert [n["title"] for n in vault.list_notes_by_status()] == [
+    assert [n["title"] for n in vault.list_tracked_notes()] == [
         "wip one", "blocked one", "new open", "old open", "done one",
     ]
 
@@ -122,7 +124,7 @@ def test_ordering_is_status_band_then_newest_first(notes_dir):
 def test_subtasks_are_attached(notes_dir):
     _write(notes_dir, "a", title="A", status="in-progress",
            body="## TODO\n- [x] done bit\n- [ ] todo bit\n")
-    (note,) = vault.list_notes_by_status()
+    (note,) = vault.list_tracked_notes()
     assert note["subtasks"] == [
         {"done": True, "text": "done bit"},
         {"done": False, "text": "todo bit"},
@@ -131,4 +133,87 @@ def test_subtasks_are_attached(notes_dir):
 
 def test_missing_notes_dir_is_empty_not_an_error(tmp_path, monkeypatch):
     monkeypatch.setattr(vault, "NOTES_DIR", tmp_path / "nope")
-    assert vault.list_notes_by_status() == []
+    assert vault.list_tracked_notes() == []
+
+
+# --- the list_todos tool ---------------------------------------------------
+
+@pytest.fixture
+def todos(notes_dir):
+    """The list_todos tool, bound to the tmp vault."""
+    import json as _json
+    from mycelium import server
+
+    def call(**kw):
+        return _json.loads(server.list_todos(**kw))
+
+    return call
+
+
+def test_default_status_is_the_unfinished_set(todos, notes_dir):
+    _write(notes_dir, "a", title="A", status="open")
+    _write(notes_dir, "b", title="B", status="in-progress")
+    _write(notes_dir, "c", title="C", status="blocked")
+    _write(notes_dir, "d", title="D", status="done")
+    _write(notes_dir, "e", title="E", status="wont-fix")
+    out = todos()
+    assert [t["title"] for t in out["todos"]] == ["B", "C", "A"]
+
+
+def test_status_any_includes_closed_work(todos, notes_dir):
+    _write(notes_dir, "a", title="A", status="open")
+    _write(notes_dir, "b", title="B", status="done")
+    assert todos(status="any")["matched"] == 2
+
+
+def test_comma_separated_status(todos, notes_dir):
+    _write(notes_dir, "a", title="A", status="open")
+    _write(notes_dir, "b", title="B", status="blocked")
+    _write(notes_dir, "c", title="C", status="done")
+    out = todos(status="blocked,done")
+    assert {t["title"] for t in out["todos"]} == {"B", "C"}
+
+
+def test_census_covers_all_tracked_notes_not_just_matched(todos, notes_dir):
+    _write(notes_dir, "a", title="A", status="open")
+    _write(notes_dir, "b", title="B", status="done")
+    _write(notes_dir, "c", title="C", status=None)
+    out = todos()
+    assert out["matched"] == 1
+    assert out["total_tracked"] == 2
+    assert out["counts_by_status"] == {"open": 1, "done": 1}
+
+
+def test_non_canonical_statuses_are_reported(todos, notes_dir):
+    _write(notes_dir, "a", title="A", status="open")
+    _write(notes_dir, "b", title="B", status="active")
+    _write(notes_dir, "c", title="C", status="backlog")
+    out = todos()
+    assert out["non_canonical_statuses"] == {"active": 1, "backlog": 1}
+    assert "note" in out
+
+
+def test_no_drift_means_no_warning_fields(todos, notes_dir):
+    _write(notes_dir, "a", title="A", status="open")
+    out = todos()
+    assert "non_canonical_statuses" not in out
+    assert "note" not in out
+
+
+def test_truncation_keeps_the_most_actionable(todos, notes_dir):
+    _write(notes_dir, "a", title="A", status="open")
+    _write(notes_dir, "b", title="B", status="in-progress")
+    out = todos(n_results=1)
+    assert [t["title"] for t in out["todos"]] == ["B"]
+    assert out["truncated"] is True
+    assert out["matched"] == 2
+
+
+def test_subtask_counts_always_present_body_optional(todos, notes_dir):
+    _write(notes_dir, "a", title="A", status="open",
+           body="- [x] one\n- [ ] two\n")
+    compact = todos(include_subtasks=False)["todos"][0]
+    assert (compact["subtasks_done"], compact["subtasks_total"]) == (1, 2)
+    assert "subtasks" not in compact
+    full = todos(include_subtasks=True)["todos"][0]
+    assert len(full["subtasks"]) == 2

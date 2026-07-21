@@ -311,34 +311,35 @@ def parse_subtasks(content: str) -> list[dict[str, Any]]:
     return subtasks
 
 
-def list_notes_by_status(
-    statuses: Iterable[str] | None = None,
+def list_tracked_notes(
     tags: Iterable[str] | None = None,
     author: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Enumerate work-tracked notes straight from disk.
+    """Enumerate every work-tracked note (one carrying a `status`) from disk.
 
     Disk is the source of truth. The ChromaDB `status` metadata only carries
     notes indexed since the field landed, so a metadata-filter query can
     silently miss notes a disk-side edit or backfill touched — and a silent
     miss is the exact failure this call exists to prevent. Globbing a few
-    hundred note files is cheap, so enumerate exhaustively and filter in
-    Python.
+    hundred note files is cheap, so enumerate exhaustively.
+
+    Status filtering is deliberately left to the caller: returning every
+    tracked note in one pass is what lets callers report the statuses actually
+    in use, including ones outside STATUS_ORDER. A filter applied here would
+    hide that drift instead of exposing it.
 
     Args:
-        statuses: Restrict to these status values. None means "any note that
-            has a status set at all" (notes with no status aren't work items).
         tags: Keep only notes carrying at least one of these tags.
         author: Keep only notes by this author.
 
     Returns:
         Notes as load_note() dicts plus a "subtasks" list, ordered by
-        STATUS_ORDER then most-recently-updated first.
+        STATUS_ORDER then most-recently-updated first. Statuses outside
+        STATUS_ORDER sort last but are never dropped.
     """
     if not NOTES_DIR.exists():
         return []
 
-    want_status = {s.lower() for s in statuses} if statuses is not None else None
     want_tags = {t.lower() for t in tags} if tags else None
 
     matched: list[dict[str, Any]] = []
@@ -348,8 +349,6 @@ def list_notes_by_status(
             continue
         status = (note.get("status") or "").strip().lower()
         if not status:
-            continue
-        if want_status is not None and status not in want_status:
             continue
         if want_tags and not {str(t).lower() for t in note.get("tags", [])} & want_tags:
             continue

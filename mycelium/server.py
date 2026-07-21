@@ -44,11 +44,12 @@ from mycelium.vault import (
     get_drawer as _vault_get_drawer,
     link_id as _link_id_fn,
     list_drawers as _vault_list_drawers,
-    list_notes_by_status as _vault_list_notes_by_status,
     list_rooms as _vault_list_rooms,
+    list_tracked_notes as _vault_list_tracked_notes,
     list_wings as _vault_list_wings,
     load_note as _vault_load_note,
     OPEN_STATUSES as _OPEN_STATUSES,
+    STATUS_ORDER as _STATUS_ORDER,
     note_id as _note_id_fn,
     slugify as _slugify,
     update_closet_for_drawer as _vault_update_closet_for_drawer,
@@ -858,22 +859,31 @@ def list_todos(
             so a truncated list keeps the most actionable work.
 
     Returns:
-        JSON with "todos", "counts_by_status" (over everything matched before
-        truncation), "total_tracked", and "truncated".
+        JSON with "todos", "counts_by_status" (the census over ALL tracked
+        notes, not just the ones returned), "total_tracked", "matched",
+        "truncated", and — when the vault holds statuses outside the canonical
+        enum — "non_canonical_statuses". That last field matters: a note
+        marked `active` is real open work that the default filter does not
+        return, so callers must not read an empty result as "nothing open".
     """
     raw = (status or "").strip().lower()
     if raw in ("any", "all", "*"):
-        statuses = None
+        wanted: Optional[set[str]] = None
     elif raw in ("", "open"):
-        statuses = list(_OPEN_STATUSES)
+        wanted = set(_OPEN_STATUSES)
     else:
-        statuses = [s.strip() for s in raw.split(",") if s.strip()]
+        wanted = {s.strip() for s in raw.split(",") if s.strip()}
 
-    matched = _vault_list_notes_by_status(statuses=statuses, tags=tags, author=author)
+    tracked = _vault_list_tracked_notes(tags=tags, author=author)
 
+    # Census over everything tracked — computed before filtering so the caller
+    # can see statuses the filter excluded.
     counts: dict[str, int] = {}
-    for n in matched:
+    for n in tracked:
         counts[n["status"]] = counts.get(n["status"], 0) + 1
+    non_canonical = {s: c for s, c in counts.items() if s not in _STATUS_ORDER}
+
+    matched = [n for n in tracked if wanted is None or n["status"] in wanted]
 
     todos = []
     for n in matched[: max(0, n_results)]:
@@ -896,12 +906,21 @@ def list_todos(
     # Deliberately not run through log_retrieval: that JSONL is the baseline
     # for scope-aware retrieval quality, and a deterministic enumeration with
     # no query and no distances would skew it.
-    return json.dumps({
+    payload: dict[str, Any] = {
         "todos":            todos,
         "counts_by_status": counts,
-        "total_tracked":    len(matched),
+        "total_tracked":    len(tracked),
+        "matched":          len(matched),
         "truncated":        len(matched) > len(todos),
-    }, indent=2)
+    }
+    if non_canonical:
+        payload["non_canonical_statuses"] = non_canonical
+        payload["note"] = (
+            "Statuses outside the canonical enum are in use and are NOT included "
+            "in the default 'open' filter. Pass status='any' or name them "
+            "explicitly to see those notes."
+        )
+    return json.dumps(payload, indent=2)
 
 
 @mcp.tool()
