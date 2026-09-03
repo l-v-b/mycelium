@@ -63,7 +63,7 @@ DEFAULT_MAX_DISTANCE     = 0.75
 
 def _log(msg: str) -> None:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(LOG_PATH, "a") as f:
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
 
 
@@ -75,7 +75,7 @@ def _load_config() -> dict | None:
     if not CONFIG_PATH.exists():
         return None
     try:
-        with open(CONFIG_PATH) as f:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
@@ -94,7 +94,7 @@ def _load_surfaced(session_id: str) -> dict:
     if not p.exists():
         return {"note_ids": [], "drawer_ids": [], "link_ids": [], "recent_yields": []}
     try:
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             d = json.load(f)
         # Normalise — accept legacy formats / partial state files
         return {
@@ -120,7 +120,7 @@ def _save_surfaced(session_id: str, state: dict, max_ids: int) -> None:
         else:
             trimmed[k] = list(v[-max_ids:])
     try:
-        with open(_state_path(session_id), "w") as f:
+        with open(_state_path(session_id), "w", encoding="utf-8") as f:
             json.dump(trimmed, f)
     except OSError as e:
         _log(f"Failed to write state: {e}")

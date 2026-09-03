@@ -53,13 +53,13 @@ def _claude_hooks_snippet(hooks_dir: Path) -> dict:
     """
     return {
         "UserPromptSubmit": [{"matcher": "", "hooks": [
-            {"type": "command", "command": f"python3 {hooks_dir}/userpromptsubmit.py --harness claude-code || true"},
+            {"type": "command", "command": f"{sys.executable} {hooks_dir}/userpromptsubmit.py --harness claude-code || true"},
         ]}],
         "Stop": [{"matcher": "", "hooks": [
-            {"type": "command", "command": f"python3 {hooks_dir}/checkpoint.py --harness claude-code || true"},
+            {"type": "command", "command": f"{sys.executable} {hooks_dir}/checkpoint.py --harness claude-code || true"},
         ]}],
         "PreCompact": [{"matcher": "", "hooks": [
-            {"type": "command", "command": f"python3 {hooks_dir}/checkpoint.py --harness claude-code || true"},
+            {"type": "command", "command": f"{sys.executable} {hooks_dir}/checkpoint.py --harness claude-code || true"},
         ]}],
     }
 
@@ -78,10 +78,10 @@ def _cursor_hooks_snippet(hooks_dir: Path) -> dict:
     """
     return {
         "beforeSubmitPrompt": [
-            {"command": f"python3 {hooks_dir}/userpromptsubmit.py --harness cursor || true"},
+            {"command": f"{sys.executable} {hooks_dir}/userpromptsubmit.py --harness cursor || true"},
         ],
         "stop": [
-            {"command": f"python3 {hooks_dir}/checkpoint.py --harness cursor || true"},
+            {"command": f"{sys.executable} {hooks_dir}/checkpoint.py --harness cursor || true"},
         ],
     }
 
@@ -180,7 +180,7 @@ def _backup_and_load(path: Path, dry_run: bool = False) -> dict:
     if not path.exists():
         return {}
     try:
-        existing = json.loads(path.read_text())
+        existing = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         print(f"ERROR: {path} is not valid JSON: {e}", file=sys.stderr)
         sys.exit(1)
@@ -266,7 +266,7 @@ def _install_for_claude(hooks_dir: Path, skills_dirs: list[Path], auto: bool, dr
         print(json.dumps(merged, indent=2))
         return
 
-    CLAUDE_SETTINGS_PATH.write_text(json.dumps(merged, indent=2))
+    CLAUDE_SETTINGS_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     print(f"\n[claude] Wrote hooks → {CLAUDE_SETTINGS_PATH}")
     print("[claude] (mycelium-owned entries replaced; other hooks preserved.)")
     for d in skills_dirs:
@@ -291,7 +291,7 @@ def _install_for_cursor(hooks_dir: Path, auto: bool, dry_run: bool) -> None:
         print(json.dumps(merged, indent=2))
         return
 
-    CURSOR_HOOKS_PATH.write_text(json.dumps(merged, indent=2))
+    CURSOR_HOOKS_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     print(f"\n[cursor] Wrote hooks → {CURSOR_HOOKS_PATH}")
     print("[cursor] (mycelium-owned entries replaced; other hooks preserved.)")
 
@@ -305,7 +305,7 @@ def _read_config() -> dict:
     if not CONFIG_PATH.exists():
         return {}
     try:
-        return json.loads(CONFIG_PATH.read_text())
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
 
@@ -389,7 +389,7 @@ def _install_mcp_server_for_claude(name: str, entry: dict, dry_run: bool) -> Non
         print(json.dumps({"mcpServers": {name: entry}}, indent=2))
         return
 
-    CLAUDE_MCP_PATH.write_text(json.dumps(merged, indent=2))
+    CLAUDE_MCP_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     print(f"\n[claude/mcp] Wrote mcpServers entry {name!r} → {CLAUDE_MCP_PATH}")
 
 
@@ -436,7 +436,7 @@ def cmd_install(args: list[str]) -> None:
             DEPLOY_DIR.mkdir(parents=True, exist_ok=True)
             cfg = _read_config()
             cfg["personal_skills_repo"] = skills_repo
-            CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+            CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
             print(f"  Persisted personal_skills_repo={skills_repo} → {CONFIG_PATH}")
 
     if not clients:
@@ -492,6 +492,76 @@ def cmd_install(args: list[str]) -> None:
         if "cursor" in clients:
             print("\n[cursor/mcp] --add-mcp-server: Cursor MCP config not yet supported. "
                   "Edit ~/.cursor/mcp.json manually with the entry shown above.")
+
+
+def _claude_desktop_config_path() -> Path:
+    """Location of Claude Desktop's MCP config file, per-OS."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+        return base / "Claude" / "claude_desktop_config.json"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    return Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
+
+
+def _desktop_mcp_entry(python: str, db_url: str, data_dir: str) -> dict:
+    """Build a stdio mcpServers entry that launches `python -m mycelium.stdio`."""
+    env: dict[str, str] = {}
+    if db_url:
+        env["MYCELIUM_DATABASE_URL"] = db_url
+    if data_dir:
+        env["MYCELIUM_DATA_DIR"] = data_dir
+    entry: dict = {"command": python, "args": ["-m", "mycelium.stdio"]}
+    if env:
+        entry["env"] = env
+    return entry
+
+
+def cmd_install_desktop(args: list[str]) -> None:
+    r"""Register mycelium as a stdio MCP server in Claude Desktop.
+
+    Claude Desktop has no hook system, so this only wires the MCP server (over
+    stdio) — recall is via the `context` tool and the `/recall` prompt, not
+    auto-injection. Writes an mcpServers entry to the per-OS config file:
+      Windows: %APPDATA%\Claude\claude_desktop_config.json
+      macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json
+      Linux:   ~/.config/Claude/claude_desktop_config.json
+
+    Usage:
+      mycelium install-desktop [--name NAME] [--python PATH]
+                               [--db-url DSN] [--data-dir PATH] [--dry-run]
+
+    --python: interpreter to launch (default: this interpreter, an absolute path).
+    --db-url / --data-dir: baked into the entry's env block; default to the
+      mycelium.config values. Idempotent — re-running replaces the named entry
+      in place and preserves other mcpServers.
+    """
+    dry_run = "--dry-run" in args
+    name    = _parse_named_flag(args, "name") or DEFAULT_MCP_NAME
+    python  = _parse_named_flag(args, "python") or sys.executable
+
+    from mycelium.config import DATABASE_URL as DEFAULT_DB, DATA_DIR as DEFAULT_DATA
+    db_url   = _parse_named_flag(args, "db-url")   or DEFAULT_DB
+    data_dir = _parse_named_flag(args, "data-dir") or str(DEFAULT_DATA)
+
+    entry = _desktop_mcp_entry(python, db_url, data_dir)
+    cfg_path = _claude_desktop_config_path()
+
+    existing = _backup_and_load(cfg_path, dry_run=dry_run)
+    servers = dict(existing.get("mcpServers") or {})
+    servers[name] = entry
+    merged = dict(existing)
+    merged["mcpServers"] = servers
+
+    if dry_run:
+        print(f"\n[claude-desktop] [DRY-RUN] Would write to {cfg_path}:")
+        print(json.dumps({"mcpServers": {name: entry}}, indent=2))
+        return
+
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    print(f"\n[claude-desktop] Wrote mcpServers entry {name!r} → {cfg_path}")
+    print("[claude-desktop] Restart Claude Desktop to load it.")
 
 
 def cmd_skills(args: list[str]) -> None:
@@ -698,7 +768,7 @@ def cmd_init(args: list[str]) -> None:
         backup = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".mycelium-bak")
         shutil.copy2(CONFIG_PATH, backup)
         print(f"  Backed up existing config → {backup}")
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     print(f"  Wrote {CONFIG_PATH} (mode={mode})")
 
     if is_client:
@@ -726,7 +796,9 @@ def cmd_serve(args: list[str]) -> None:
 
     Defaults come from `mycelium.config` (overridable via MYCELIUM_HOST /
     MYCELIUM_PORT env vars). Transport defaults to `sse`; pass
-    `--transport streamable-http` to switch.
+    `--transport streamable-http` for HTTP, or `--transport stdio` for a
+    stdio subprocess (how Claude Desktop and other local MCP clients launch
+    the server — see also `python -m mycelium.stdio`).
 
     The server reads its vault from `$MYCELIUM_DATA_DIR/vault/` and its search
     index from PostgreSQL/pgvector (MYCELIUM_DATABASE_URL). Run `mycelium init`
@@ -735,17 +807,24 @@ def cmd_serve(args: list[str]) -> None:
     from mycelium.config import HOST as DEFAULT_HOST, PORT as DEFAULT_PORT
     from mycelium.server import mcp
 
-    host = _parse_named_flag(args, "host") or DEFAULT_HOST
-    port_str = _parse_named_flag(args, "port") or str(DEFAULT_PORT)
     transport = _parse_named_flag(args, "transport") or "sse"
 
+    # Under stdio, stdout IS the JSON-RPC wire — every diagnostic goes to stderr,
+    # and host/port are meaningless (the client owns the pipe).
+    if transport == "stdio":
+        print("Starting mycelium FastMCP server (transport=stdio)", file=sys.stderr)
+        mcp.run(transport="stdio")
+        return
+
+    host = _parse_named_flag(args, "host") or DEFAULT_HOST
+    port_str = _parse_named_flag(args, "port") or str(DEFAULT_PORT)
     try:
         port = int(port_str)
     except ValueError:
         print(f"ERROR: --port must be an integer, got {port_str!r}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Starting mycelium FastMCP server on {host}:{port} (transport={transport})")
+    print(f"Starting mycelium FastMCP server on {host}:{port} (transport={transport})", file=sys.stderr)
     mcp.run(transport=transport, host=host, port=port)
 
 
@@ -814,6 +893,8 @@ def main() -> None:
         print("                              --add-mcp-server [--mcp-name NAME]")
         print("                              --skills-repo URL (your personal skills git repo; saved to config.json)")
         print("                              --dry-run    (print the would-be config, no writes)")
+        print("  install-desktop      Register the stdio MCP server in Claude Desktop (Windows/macOS/Linux)")
+        print("                       Flags: --name NAME, --python PATH, --db-url DSN, --data-dir PATH, --dry-run")
         print("  skills sync          Clone/pull personal-skills repo to ~/.mycelium/skills/personal/")
         print("                       Flags: --repo URL (one-shot override)")
         print("  serve                Start the mycelium FastMCP server (alias for `python -m mycelium`)")
@@ -835,6 +916,7 @@ def main() -> None:
     dispatch = {
         "init":                cmd_init,
         "install":             cmd_install,
+        "install-desktop":     cmd_install_desktop,
         "skills":              cmd_skills,
         "serve":               cmd_serve,
         "verify":              cmd_verify,

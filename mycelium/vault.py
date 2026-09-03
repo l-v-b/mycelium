@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,7 +93,7 @@ def _git_push_async() -> None:
     """
     try:
         _GIT_LOG.parent.mkdir(parents=True, exist_ok=True)
-        log_fh = open(_GIT_LOG, "a")
+        log_fh = open(_GIT_LOG, "a", encoding="utf-8")
         try:
             log_fh.write(
                 f"[{datetime.now(timezone.utc).isoformat()}] push initiated\n"
@@ -113,15 +114,22 @@ def _git_push_async() -> None:
 def _log_git_failure(message: str, error: str) -> None:
     try:
         _GIT_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(_GIT_LOG, "a") as f:
+        with open(_GIT_LOG, "a", encoding="utf-8") as f:
             f.write(f"[{datetime.now(timezone.utc).isoformat()}] commit '{message}' failed: {error.strip()}\n")
     except OSError:
         pass
 
 
 def init_vault_git() -> None:
-    """Ensure vault/ is a git repo. Safe to call multiple times."""
+    """Ensure vault/ is a git repo. Safe to call multiple times.
+
+    Git is optional: if it isn't on PATH (common on a fresh Windows box), the
+    vault directory is still created but versioning is skipped rather than
+    raising. Writes go to disk regardless — only history/push is lost.
+    """
     VAULT_DIR.mkdir(parents=True, exist_ok=True)
+    if shutil.which("git") is None:
+        return
     git_dir = VAULT_DIR / ".git"
     if not git_dir.exists():
         subprocess.run(_git_args() + ["init"], check=True, capture_output=True)
