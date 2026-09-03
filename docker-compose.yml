@@ -1,0 +1,30 @@
+# Local PostgreSQL + pgvector for a personal mycelium install.
+#
+# The pgvector/pgvector image ships postgres with the `vector` extension
+# preinstalled. mycelium connects as the `postgres` superuser and creates its
+# own extension + tables on first connect — there is nothing else to run.
+#
+#   docker compose up -d
+#
+# Then point mycelium at it (this is the default DSN the CLI assumes):
+#   postgresql://postgres:changeme@localhost:5432/postgres
+#
+# For a real install, change POSTGRES_PASSWORD and the DSN to match.
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: mycelium-db
+    environment:
+      POSTGRES_PASSWORD: changeme
+    ports:
+      - "5432:5432"
+    volumes:
+      - mycelium-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mycelium-pgdata:

@@ -6,7 +6,10 @@ import subprocess
 import warnings
 from pathlib import Path
 
-DATA_DIR   = Path(os.environ.get("MYCELIUM_DATA_DIR", "/data"))
+# Default to a per-user dir so a fresh install works on any OS (incl. Windows,
+# where "/data" resolves to an unwritable C:\data). The container image sets
+# MYCELIUM_DATA_DIR=/data explicitly, so this default never applies there.
+DATA_DIR   = Path(os.environ.get("MYCELIUM_DATA_DIR") or Path.home() / ".mycelium" / "data")
 VAULT_DIR  = DATA_DIR / "vault"
 CHROMA_DIR = DATA_DIR / "chroma"
 
@@ -118,7 +121,7 @@ _user_cfg: dict = {}
 _user_cfg_path = Path.home() / ".mycelium" / "config.json"
 if _user_cfg_path.exists():
     try:
-        _user_cfg = json.loads(_user_cfg_path.read_text())
+        _user_cfg = json.loads(_user_cfg_path.read_text(encoding="utf-8"))
         if not isinstance(_user_cfg, dict):
             _user_cfg = {}
     except (json.JSONDecodeError, OSError):

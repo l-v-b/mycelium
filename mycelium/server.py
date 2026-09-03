@@ -184,7 +184,15 @@ def context(
     mode: Literal["auto", "full", "snippet", "titles"] = "auto",
     _caller: str = "agent",
 ) -> str:
-    """Retrieve combined context: curated notes + verbatim drawers + related links.
+    """Recall relevant memory — call this FIRST, at the start of any task and
+    before answering from your own knowledge. Retrieves combined context:
+    curated notes + verbatim drawers + related links.
+
+    Call it when: beginning a session or a non-trivial task; the user references
+    prior work, a project, a system, or says "last time / remember when"; or
+    before reaching for the filesystem. In clients without hook-based
+    auto-injection (e.g. Claude Desktop) this tool — and the `/recall` prompt —
+    are how memory reaches the conversation, so err toward calling it.
 
     The primary tool for task start. Returns all three layers in one call, plus
     optionally the graph neighborhood — outgoing links from any returned entity
@@ -349,6 +357,29 @@ def context(
     # mode == "full" → no transformation
 
     return json.dumps(result, indent=2)
+
+
+@mcp.prompt(
+    name="recall",
+    description=(
+        "Inject relevant mycelium memory into the conversation. Use at the start "
+        "of a task — especially in Claude Desktop, which has no auto-recall hook. "
+        "Optional query narrows the recall; leave it empty for a broad sweep."
+    ),
+)
+def recall_prompt(query: str = "") -> str:
+    """Deterministic recall for hookless clients.
+
+    Runs context() server-side at prompt-get time and returns the hits as a
+    message the model then reads as ordinary conversation context. This is the
+    manual analogue of Claude Code's UserPromptSubmit auto-injection.
+    """
+    hits = context(query or "", _caller="recall-prompt")
+    header = (
+        f"Relevant mycelium memory for: {query}" if query
+        else "Relevant mycelium memory (broad recall)"
+    )
+    return f"{header}\n\n{hits}"
 
 
 # ---------------------------------------------------------------------------
@@ -1560,7 +1591,7 @@ def _register_skill_resource(slug: str, src_dir: Path, uri_scheme: str, label_pr
         mime_type="text/markdown",
     )
     def _read_skill() -> str:
-        return (src_dir / slug / "SKILL.md").read_text()
+        return (src_dir / slug / "SKILL.md").read_text(encoding="utf-8")
 
 
 def _register_skills_from_dir(src_dir: Path, uri_scheme: str, label_prefix: str) -> None:

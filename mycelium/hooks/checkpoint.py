@@ -105,7 +105,7 @@ def _build_reason(window_start: int, window_end: int, since: int) -> str:
 
 def _log(msg: str) -> None:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(LOG_PATH, "a") as f:
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(f"[{datetime.now().strftime('%H:%M:%S')}] [checkpoint] {msg}\n")
 
 
@@ -219,7 +219,7 @@ def main() -> None:
     for path in (marker, *legacy_markers):
         if path.is_file():
             try:
-                last = max(last, int(path.read_text().strip()))
+                last = max(last, int(path.read_text(encoding="utf-8").strip()))
             except (ValueError, OSError):
                 pass
 
@@ -233,13 +233,13 @@ def main() -> None:
         _log(f"session={session_id} count={count} < marker {last}; transcript "
              "compacted — re-baselining marker to current count")
         last = count
-        marker.write_text(str(count))
+        marker.write_text(str(count), encoding="utf-8")
 
     since = count - last
     _log(f"session={session_id} count={count} last={last} since={since}")
 
     if since >= CHECKPOINT_INTERVAL and count > 0:
-        marker.write_text(str(count))
+        marker.write_text(str(count), encoding="utf-8")
         window_start = last + 1
         window_end = count
         reason = _build_reason(window_start, window_end, since)
