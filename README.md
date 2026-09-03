@@ -29,18 +29,21 @@ pip install mycelium-palace        # or: uv tool install mycelium-palace
 
 ### 2. Start the database
 
-From a clone of this repo (or drop the included `docker-compose.yml` anywhere):
+mycelium needs a PostgreSQL with the `pgvector` extension. The quickest way —
+**one command, nothing to clone:**
 
 ```bash
-docker compose up -d
+docker run -d --name mycelium-db -e POSTGRES_PASSWORD=changeme -p 5432:5432 -v mycelium-pgdata:/var/lib/postgresql/data pgvector/pgvector:pg17
 ```
 
 That runs Postgres with pgvector on `localhost:5432`. mycelium creates its own
 tables and the `vector` extension on first connect — nothing else to set up.
+(Prefer Docker Compose? This repo ships an equivalent `docker-compose.yml`; if
+you cloned it, `docker compose up -d` does the same thing.)
 
 > **Windows:** install [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)
-> (free for personal use; runs on Windows Home via the WSL2 backend). Then run
-> the `docker compose up -d` above in PowerShell.
+> (free for personal use; runs on Windows Home via the WSL2 backend), then paste
+> the single-line `docker run …` command above into PowerShell.
 
 ### 3. Wire it into your assistant
 
@@ -65,8 +68,35 @@ mycelium install --auto-hooks      # merges recall/capture hooks into ~/.claude/
 ### 4. Use it
 
 Ask your assistant to remember something ("capture this…", "make a note that…")
-and to recall ("what do we know about…"). Notes and drawers land as Markdown
-under `~/.mycelium/data/vault/`.
+and to recall ("what do we know about…").
+
+## Where your memory lives
+
+Everything is plain **Markdown on your own machine**, under
+`~/.mycelium/data/vault/` (macOS/Linux) or `%USERPROFILE%\.mycelium\data\vault\`
+(Windows), split into `notes/`, `drawers/`, `diary/`, `concepts/`, and `links/`.
+**These files are the canonical record** — the Postgres index is just a
+rebuildable derivative. Read them, grep them, back them up, edit them by hand.
+
+### Optional: version and sync your vault to GitHub
+
+mycelium **auto-commits every write and pushes** to a git remote named `origin`
+— but only once the vault is a git repo with that remote. Wire it up once (use a
+**private** repo — this is your memory):
+
+```bash
+cd ~/.mycelium/data/vault            # Windows: cd %USERPROFILE%\.mycelium\data\vault
+git init && git branch -M main
+git remote add origin https://github.com/<you>/<your-vault-repo>.git
+git add -A && git commit -m "initial vault"
+git push -u origin main
+```
+
+After that, every note/drawer/link write auto-commits and pushes in the
+background. On Windows the first push prompts for GitHub credentials via Git
+Credential Manager and caches them. Set `MYCELIUM_GIT_AUTHOR` /
+`MYCELIUM_GIT_EMAIL` to stamp commits with your name (defaults: `mycelium` /
+`mycelium@localhost`); set `MYCELIUM_GIT_AUTHOR=""` to disable git entirely.
 
 ## How recall reaches the model
 

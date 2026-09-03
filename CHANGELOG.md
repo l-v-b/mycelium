@@ -4,6 +4,18 @@ All notable changes to mycelium-palace are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.7.1] — 2026-09-03
+
+### Fixed
+- README quickstart no longer assumes a repo clone — the database step is now a
+  single `docker run` one-liner that works straight from `pip install` (the PyPI
+  page never mentioned needing the repo).
+
+### Added
+- README section documenting where the Markdown vault lives and how to version /
+  sync it to a private GitHub repo (mycelium auto-commits + pushes once the vault
+  is a git repo with an `origin` remote).
+
 ## [2.7.0] — 2026-09-03
 
 ### Added
