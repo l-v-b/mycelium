@@ -1,25 +1,20 @@
-name: Publish to TestPyPI
+name: Publish to PyPI
 
-# Triggered on version tags. Builds the sdist + wheel with uv, then
-# publishes to TestPyPI via Trusted Publisher (OIDC) — no API token
-# in repo secrets.
+# Triggered on version tags (v*.*.*). Builds the sdist + wheel with uv, then
+# publishes to PyPI via Trusted Publisher (OIDC) — no API token in repo secrets.
 #
-# Currently targets TestPyPI for shake-out. Once the OIDC flow is
-# verified end-to-end and the package looks correct on test.pypi.org,
-# a follow-up will either:
-#   (a) flip --publish-url back to main PyPI, OR
-#   (b) split into two jobs / two workflows triggered by different
-#       tag patterns (e.g. "tv*.*.*" for test, "v*.*.*" for prod).
+# Targets production PyPI. `uv publish` defaults to https://upload.pypi.org/legacy/,
+# so no --publish-url is needed. (During shake-out this pointed at TestPyPI; the
+# TestPyPI project remains at https://test.pypi.org/project/mycelium-palace/.)
 #
-# TestPyPI Trusted Publisher configuration (one-time):
-#   - URL: https://test.pypi.org/manage/account/publishing/
-#   - Project: mycelium-palace (use "Add a pending publisher" — the
-#     project does not yet exist on TestPyPI; pending publishers are
-#     promoted to real ones on first successful publish)
+# PyPI Trusted Publisher configuration (one-time, before the first tag):
+#   - URL: https://pypi.org/manage/account/publishing/
+#   - Project: mycelium-palace (use "Add a pending publisher" — the project does
+#     not yet exist on prod PyPI; pending publishers promote on first publish)
 #   - Owner: l-v-b
 #   - Repository: mycelium
 #   - Workflow filename: publish.yml
-#   - Environment: testpypi
+#   - Environment: pypi
 
 on:
   push:
@@ -28,11 +23,11 @@ on:
 
 jobs:
   publish:
-    name: Build and publish to TestPyPI
+    name: Build and publish to PyPI
     runs-on: ubuntu-latest
     environment:
-      name: testpypi
-      url: https://test.pypi.org/project/mycelium-palace/
+      name: pypi
+      url: https://pypi.org/project/mycelium-palace/
     permissions:
       id-token: write   # OIDC token for Trusted Publisher
       contents: read
@@ -52,5 +47,5 @@ jobs:
       - name: Sanity-check artefacts
         run: ls -la dist/
 
-      - name: Publish to TestPyPI
-        run: uv publish --publish-url https://test.pypi.org/legacy/
+      - name: Publish to PyPI
+        run: uv publish
