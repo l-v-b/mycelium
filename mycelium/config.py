@@ -27,14 +27,14 @@ CHROMA_HTTP_URL = os.environ.get("MYCELIUM_CHROMA_URL", "")
 # --- pgvector / PostgreSQL backend (db.py) -----------------------------------
 # Single connection string for the derived search index. Both personal and team
 # modes use pgvector now — personal points at a local postgres, team at the
-# shared cluster DB (e.g. sit-pg-cluster). psycopg3 DSN form.
+# shared cluster DB. psycopg3 DSN form.
 DATABASE_URL = os.environ.get(
     "MYCELIUM_DATABASE_URL",
     "postgresql://mycelium:mycelium@localhost:5432/mycelium",
 )
 
 # Connection-pool sizing. Kept small to fit the per-role connection limit
-# (mycelium_user is capped at 10 concurrent on sit-pg-cluster). Tune via env.
+# (a shared cluster may cap the service role at 10 concurrent). Tune via env.
 DB_POOL_MIN     = int(os.environ.get("MYCELIUM_DB_POOL_MIN", "1"))
 DB_POOL_SIZE    = int(os.environ.get("MYCELIUM_DB_POOL_SIZE", "5"))
 DB_POOL_TIMEOUT = float(os.environ.get("MYCELIUM_DB_POOL_TIMEOUT", "30"))

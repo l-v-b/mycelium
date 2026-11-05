@@ -1,11 +1,11 @@
 # GitLab SIT integration-test wiring for mycelium (Generic Docker pipeline).
 #
-# Per Rain's "GitLab Pipeline Integration Testing" docs, the generic Docker
+# Per the team's "GitLab Pipeline Integration Testing" docs, the generic Docker
 # template exposes an OPTIONAL integration-test job that runs BETWEEN the `sit`
 # and `prod` deployments and GATES prod. It is enabled via pipeline `inputs`:
 #   integration_test_enabled / integration_test_container / integration_test_command
 #
-# This snippet goes in the .gitlab-ci.yml of the Rain GitLab deploy repo for
+# This snippet goes in the .gitlab-ci.yml of the GitLab deploy repo for
 # mycelium (the k8s/helm repo), NOT the package repo.
 #
 # It runs the BLACK-BOX e2e suite against the deployed SIT stack in team mode.
@@ -13,13 +13,13 @@
 #  which needs Docker-in-Docker — wire that as a separate pre-merge job.)
 
 include:
-  - project: software-engineering/catalyst/pipeline-templates
+  - project: your-group/pipeline-templates
     ref: main
     file: pipeline.docker.helm.gitlab-ci.yml
     inputs:
       integration_test_enabled: true
       # Confirm exact tag exists in Harbor before pinning.
-      integration_test_container: "harbor.cicd.rain.co.za/docker.io/library/python:3.12-slim"
+      integration_test_container: "registry.example.com/docker.io/library/python:3.12-slim"
       integration_test_command:
         - "set -euo pipefail"
         - "pip install --no-cache-dir 'fastmcp>=2.0' 'pytest>=8.0'"
@@ -36,9 +36,9 @@ include:
 #   MYCELIUM_E2E_URL     SIT MCP endpoint the runner can reach. TWO open
 #                        questions the pipeline-templates repo must answer:
 #                          (a) in-cluster runner  -> http://mycelium.<ns>.svc:9002/sse
-#                          (b) external runner     -> https://mycelium-sit.vibe.rain.co.za/sse
+#                          (b) external runner     -> https://mycelium-sit.example.com/sse
 #                          (c) via ContextForge    -> https://cf-sit.../servers/<id>/mcp
-#                        Pick per how Rain's runners are placed; set transport
+#                        Pick per how your runners are placed; set transport
 #                        to match ("sse" for /sse, "http" for /mcp).
 #   MYCELIUM_E2E_MODE    "team"   (SIT runs MYCELIUM_DEPLOYMENT_MODE=team)
 #   MYCELIUM_E2E_TRANSPORT  "sse" | "http"
@@ -52,7 +52,7 @@ include:
 # the suite reads them directly. Exit code gates prod: any failure blocks the
 # prod deploy.
 #
-# OPEN ITEMS to confirm from `software-engineering/catalyst/pipeline-templates`
+# OPEN ITEMS to confirm from `your-group/pipeline-templates`
 # -> pipeline.docker.helm.gitlab-ci.yml (the docs page does not specify these):
 #   - whether the integration-test job clones the deploy repo (GIT_STRATEGY)
 #     and whether outbound git/network egress is allowed for the clone above;

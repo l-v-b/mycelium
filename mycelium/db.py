@@ -25,7 +25,7 @@ Distances are cosine (``<=>``), identical semantics to the old
 math and the dedupe threshold carry over unchanged.
 
 Connection: a small psycopg connection pool sized for the per-role connection
-limit (sit-pg-cluster caps mycelium_user at 10 concurrent). Synchronous writes
+limit (a shared cluster may cap the service role at 10 concurrent). Synchronous writes
 in both modes — no Redis, no writer worker.
 """
 from __future__ import annotations
@@ -53,8 +53,8 @@ _schema_ready = False
 def get_pool() -> ConnectionPool:
     """Lazily build the process-wide connection pool.
 
-    Sized small to fit the per-role connection limit (mycelium_user = 10 on
-    sit-pg-cluster). Override via MYCELIUM_DB_POOL_SIZE / MYCELIUM_DB_MAX_OVERFLOW.
+    Sized small to fit the per-role connection limit (for example, 10 on a
+    shared cluster). Override via MYCELIUM_DB_POOL_SIZE / MYCELIUM_DB_MAX_OVERFLOW.
     """
     global _pool
     if _pool is None:
@@ -68,7 +68,7 @@ def get_pool() -> ConnectionPool:
                     max_idle=config.DB_POOL_RECYCLE,
                     # Validate (ping) each connection as it leaves the pool and
                     # transparently replace dead ones. Without this, a connection
-                    # the server closed while idle (e.g. sit-pg-cluster idle
+                    # the server closed while idle (e.g. a shared cluster's idle
                     # timeout) is handed out stale and the first execute fails
                     # with "OperationalError: server closed the connection
                     # unexpectedly". check_connection runs a cheap SELECT 1.

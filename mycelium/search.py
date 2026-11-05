@@ -166,7 +166,7 @@ def search_drawers(
 
     Args:
         query: Natural language search query.
-        wing: Optional wing filter (e.g. "mycelium", "rain").
+        wing: Optional wing filter (e.g. "mycelium", "work").
         room: Optional room filter (e.g. "decisions", "code").
         n_results: Max results to return (default 10).
         max_distance: Cosine distance threshold. 0.0 = no filter. Typical: 0.3-0.85.

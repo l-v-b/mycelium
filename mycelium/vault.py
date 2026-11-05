@@ -642,7 +642,7 @@ def delete_link_file(lid: str) -> bool:
 
 # Diary entries are filed per-author-per-day: vault/diary/{date}-{slug}.md, one
 # file per (calendar day, author). The derived drawer id is `diary_` + the
-# filename stem (e.g. diary_2026-06-05-liam.blignaut), so every index / orphan /
+# filename stem (e.g. diary_2026-06-05-jane.doe), so every index / orphan /
 # reindex site that builds `diary_{f.stem}` stays correct with no date/slug
 # parsing of its own.
 DIARY_WING = "wing_claude"
@@ -654,8 +654,8 @@ _DIARY_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 def _author_slug(author: str) -> str:
     """Filesystem-safe slug from an author identity for the diary filename.
 
-    Uses the email local-part when present (liam.blignaut@rain.co.za ->
-    liam.blignaut); lowercased, non-alphanumerics collapsed to '.'. The full
+    Uses the email local-part when present (jane.doe@example.com ->
+    jane.doe); lowercased, non-alphanumerics collapsed to '.'. The full
     identity is preserved in the file's `author` frontmatter.
     """
     local = author.split("@", 1)[0] if "@" in author else author
@@ -666,7 +666,7 @@ def _author_slug(author: str) -> str:
 def _diary_date_of(stem: str) -> str:
     """Calendar-date prefix of a diary filename stem.
 
-    '2026-06-05-liam.blignaut' -> '2026-06-05'; legacy '2026-06-05' -> itself.
+    '2026-06-05-jane.doe' -> '2026-06-05'; legacy '2026-06-05' -> itself.
     """
     m = _DIARY_DATE_RE.match(stem)
     return m.group(1) if m else stem
