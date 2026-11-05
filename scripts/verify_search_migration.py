@@ -33,8 +33,8 @@ DEFAULT_QUERIES = [
     "ContextForge tool refresh procedure",
     "Phase 1 personal fork disk-first vault",
     "ChromaDB performance HNSW bottleneck",
-    # Rain infrastructure
-    "rain vibe kubernetes deployment",
+    # Infrastructure
+    "kubernetes deployment",
     "openbao vault secret rotation",
     "argocd applications repo structure",
     "common-deployment helm chart",

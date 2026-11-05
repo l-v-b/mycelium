@@ -77,7 +77,7 @@ mcp = FastMCP(
         "have already explored the taxonomy.\n"
         "\n"
         "FEDERATED context (when external sources are configured): use context_federated(query, sources=...) "
-        "to fan out across mycelium + external sources (gitlab, backstage, rain-docs, zabbix as they land) "
+        "to fan out across mycelium + external sources (such as gitlab or backstage, as they land) "
         "with rank fusion. Pass sources=['all'] to hit every registered adapter; pass a specific list to "
         "scope (e.g. sources=['mycelium-notes', 'gitlab-config']). Returns ranked results from all sources "
         "in one call; synthesize across them yourself.\n"
@@ -484,7 +484,7 @@ def file(
 
     Args:
         content: Verbatim text content to store (copied, not composed).
-        wing: Project or domain name (e.g. "mycelium", "rain", "personal").
+        wing: Project or domain name (e.g. "mycelium", "work", "personal").
         room: Aspect or sub-topic (e.g. "decisions", "code", "bugs").
         source: Where this content was copied from — name the raw origin
             (e.g. 'kubectl describe pod x -o yaml', 'paste from Liam',

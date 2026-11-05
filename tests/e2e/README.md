@@ -69,7 +69,7 @@ Point the suite at any reachable mycelium endpoint:
 
 ```bash
 pip install -r tests/e2e/requirements.txt
-MYCELIUM_E2E_URL="https://mycelium-sit.vibe.rain.co.za/sse" \
+MYCELIUM_E2E_URL="https://mycelium-sit.example.com/sse" \
 MYCELIUM_E2E_MODE=team \
 MYCELIUM_E2E_TRANSPORT=sse \
 MYCELIUM_E2E_TOKEN="$MY_JWT" \

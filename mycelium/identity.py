@@ -1,6 +1,6 @@
 """Per-call end-user identity, resolved from ContextForge's propagated headers.
 
-When `identity_propagation` is enabled on the rain-mycelium gateway, ContextForge
+When `identity_propagation` is enabled on a team gateway, ContextForge
 injects the authenticated end-user's identity onto every forwarded request as
 `X-Forwarded-User-*` HTTP headers (see CF mcpgateway/utils/identity_propagation.py:
 build_identity_headers). We read them here to stamp the real per-user author on
